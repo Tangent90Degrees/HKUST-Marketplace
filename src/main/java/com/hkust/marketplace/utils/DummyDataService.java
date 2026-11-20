@@ -343,6 +343,11 @@ public class DummyDataService {
         updateProfile(requireActor(UserRole.BUYER), fullName, password, confirmation, null, null);
     }
 
+    /** Updates the signed-in administrator's name and optional password. */
+    public synchronized void updateAdminProfile(String fullName, String password, String confirmation) {
+        updateProfile(requireActor(UserRole.ADMIN), fullName, password, confirmation, null, null);
+    }
+
     /** Registers and returns a validated seller account for the seller dashboard. */
     public synchronized User registerSeller(String username, String fullName, String password,
                                             String confirmation, String bio, String location) {
@@ -442,7 +447,8 @@ public class DummyDataService {
                 .collect(Collectors.toList());
     }
 
-    public List<Listing> getPendingListings() {
+    public synchronized List<Listing> getPendingListings() {
+        requireActor(UserRole.ADMIN);
         return listings.values().stream()
                 .filter(l -> l.getStatus() == ListingStatus.PENDING_REVIEW)
                 .collect(Collectors.toList());
@@ -456,6 +462,39 @@ public class DummyDataService {
 
     public Listing findListing(String id) {
         return listings.get(id);
+    }
+
+    /** Records a pending listing decision and its seller notification as one write. */
+    public synchronized void reviewListing(String listingId, boolean approve, String reason) {
+        requireActor(UserRole.ADMIN);
+        Listing listing = findListing(listingId);
+        if (listing == null || listing.getStatus() != ListingStatus.PENDING_REVIEW) {
+            throw new IllegalStateException("This listing is no longer pending review.");
+        }
+        User seller = findUser(listing.getSellerUsername());
+        if (approve && (seller == null || !seller.isActive() || seller.getRole() != UserRole.SELLER)) {
+            throw new IllegalStateException("Only listings from active sellers can be approved.");
+        }
+        if (!approve && (reason == null || reason.isBlank())) {
+            throw new IllegalArgumentException("A written rejection reason is required.");
+        }
+        LocalDateTime priorReviewedAt = listing.getReviewedAt();
+        String priorReason = listing.getRejectionReason();
+        listing.setStatus(approve ? ListingStatus.LIVE : ListingStatus.REJECTED);
+        listing.setReviewedAt(LocalDateTime.now());
+        listing.setRejectionReason(approve ? null : reason.strip());
+        String title = approve ? "Listing Approved" : "Listing Rejected";
+        String message = approve ? "Your listing '" + listing.getTitle() + "' is now live."
+                : "Your listing '" + listing.getTitle() + "' was rejected. Reason: " + reason.strip();
+        Notification notice = new Notification(listing.getSellerUsername(), title, message, "Listing");
+        notice.setId("N" + notifIdCounter.getAndIncrement());
+        notifications.add(notice);
+        saveChanges(() -> {
+            listing.setStatus(ListingStatus.PENDING_REVIEW);
+            listing.setReviewedAt(priorReviewedAt);
+            listing.setRejectionReason(priorReason);
+            notifications.remove(notice);
+        });
     }
 
     /** Saves a pending seller listing and its administrator notification together. */
