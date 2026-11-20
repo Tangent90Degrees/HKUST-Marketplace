@@ -440,8 +440,9 @@ public class DummyDataService {
         }
     }
 
-    public Collection<User> getAllUsers() {
-        return users.values();
+    public synchronized Collection<User> getAllUsers() {
+        requireActor(UserRole.ADMIN);
+        return users.values().stream().filter(user -> !user.isDeleted()).toList();
     }
 
     public List<User> getUsersByRole(UserRole role) {
@@ -451,8 +452,9 @@ public class DummyDataService {
     }
 
     // ========== Listing methods ==========
-    public Collection<Listing> getAllListings() {
-        return listings.values();
+    public synchronized Collection<Listing> getAllListings() {
+        requireActor(UserRole.ADMIN);
+        return List.copyOf(listings.values());
     }
 
     public List<Listing> getLiveListings() {
@@ -795,6 +797,212 @@ public class DummyDataService {
         edited.setReviewedAt(original.getReviewedAt());
         edited.setRejectionReason(original.getRejectionReason());
         edited.setViewCount(original.getViewCount());
+        edited.setRemovalReason(original.getRemovalReason());
+        edited.setCreatedByAdmin(original.getCreatedByAdmin());
+    }
+
+    /** Publishes a validated listing on behalf of an active seller and records who created it. */
+    public synchronized void adminCreateListing(String sellerName, Listing draft) {
+        User admin = requireActor(UserRole.ADMIN);
+        User seller = moderatedUser(sellerName);
+        if (seller.getRole() != UserRole.SELLER || !seller.isActive() || draft.getId() != null) {
+            throw new IllegalArgumentException("Select an active seller and provide a new listing.");
+        }
+        validateListing(draft);
+        draft.setId("L" + listingIdCounter.getAndIncrement());
+        draft.setSellerUsername(seller.getUsername());
+        draft.setSellerFullName(seller.getFullName());
+        draft.setCreatedByAdmin(admin.getUsername());
+        draft.setStatus(ListingStatus.LIVE);
+        listings.put(draft.getId(), draft);
+        Notification notice = createNotice(seller.getUsername(), "Listing published by administrator", draft.getTitle(), "Listing");
+        saveChanges(() -> {
+            listings.remove(draft.getId());
+            notifications.remove(notice);
+            draft.setId(null);
+        });
+    }
+
+    /** Edits listing details and closes every unaccepted proposal. Accepted deals retain their terms. */
+    public synchronized void adminEditListing(String id, Listing edited) {
+        requireActor(UserRole.ADMIN);
+        Listing original = requireListing(id);
+        validateListing(edited);
+        retainListingIdentity(original, edited);
+        Map<Deal, String> closed = new LinkedHashMap<>();
+        List<Notification> sent = new ArrayList<>();
+        closeProposals(deal -> id.equals(deal.getListingId()), closed);
+        notifyAffectedBuyers(closed.keySet(), original, "A listing you proposed on was edited.", sent);
+        listings.put(id, edited);
+        sent.add(createNotice("admin", "Listing Edited", original.getTitle(), "Audit"));
+        saveChanges(() -> {
+            listings.put(id, original);
+            closed.forEach(Deal::setStatus);
+            notifications.removeAll(sent);
+        });
+    }
+
+    /** Removes a live listing and sends the reason only to buyers who had open proposals on it. */
+    public synchronized void adminTakeDown(String id, String reason) {
+        requireActor(UserRole.ADMIN);
+        Listing listing = requireListing(id);
+        if (listing.getStatus() != ListingStatus.LIVE || reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("A live listing and a written reason are required.");
+        }
+        List<Notification> sent = new ArrayList<>();
+        Map<Deal, String> closed = new LinkedHashMap<>();
+        closeProposals(deal -> id.equals(deal.getListingId()), closed);
+        notifyAffectedBuyers(closed.keySet(), listing, reason.strip(), sent);
+        sent.add(createNotice("admin", "Listing Taken Down", listing.getTitle() + ": " + reason.strip(), "Audit"));
+        String oldReason = listing.getRemovalReason();
+        listing.setRemovalReason(reason.strip());
+        listing.setStatus(ListingStatus.REMOVED);
+        saveChanges(() -> {
+            listing.setStatus(ListingStatus.LIVE);
+            listing.setRemovalReason(oldReason);
+            closed.forEach(Deal::setStatus);
+            notifications.removeAll(sent);
+        });
+    }
+
+    private Listing requireListing(String id) {
+        Listing listing = findListing(id);
+        if (listing == null) {
+            throw new IllegalStateException("This listing is unavailable.");
+        }
+        return listing;
+    }
+
+    private void closeProposals(java.util.function.Predicate<Deal> affected, Map<Deal, String> closed) {
+        deals.stream().filter(affected).filter(DummyDataService::isOpenProposal).forEach(deal -> {
+            closed.put(deal, deal.getStatus());
+            deal.setStatus("Cancelled");
+        });
+    }
+
+    private void notifyAffectedBuyers(Collection<Deal> affected, Listing listing, String reason, List<Notification> sent) {
+        affected.stream().map(Deal::getBuyerUsername).distinct().forEach(buyer -> sent.add(
+                createNotice(buyer, "Listing updated", listing.getTitle() + ": " + reason, "Listing")));
+    }
+
+    /** Disables the account and closes unaccepted work. Permanent removal prevents reactivation. */
+    public synchronized void moderateAccount(String username, boolean delete) {
+        requireActor(UserRole.ADMIN);
+        User user = moderatedUser(username);
+        String key = user.getUsername();
+        if (deals.stream().anyMatch(deal -> involves(deal, key) && "Accepted".equals(deal.getStatus()))) {
+            throw new IllegalStateException("This account has a reserved or in-progress deal.");
+        }
+        if (!user.isActive() && !delete) {
+            throw new IllegalStateException("This account is already deactivated.");
+        }
+        Map<Deal, String> closed = new LinkedHashMap<>();
+        Map<Listing, ListingStatus> removed = new LinkedHashMap<>();
+        Map<Listing, String> reasons = new LinkedHashMap<>();
+        List<Notification> sent = new ArrayList<>();
+        String action = delete ? "Account permanently removed" : "Account deactivated";
+        if (user.getRole() == UserRole.SELLER) {
+            for (Listing listing : getListingsBySeller(key)) {
+                if (listing.getStatus() == ListingStatus.LIVE) {
+                    var affected = deals.stream().filter(deal -> listing.getId().equals(deal.getListingId()))
+                            .filter(DummyDataService::isOpenProposal).toList();
+                    notifyAffectedBuyers(affected, listing, action, sent);
+                }
+                if (listing.getStatus() == ListingStatus.LIVE || listing.getStatus() == ListingStatus.PENDING_REVIEW) {
+                    removed.put(listing, listing.getStatus());
+                    reasons.put(listing, listing.getRemovalReason());
+                    listing.setStatus(ListingStatus.REMOVED);
+                    listing.setRemovalReason(action);
+                }
+            }
+        }
+        closeProposals(deal -> involves(deal, key), closed);
+        boolean wasActive = user.isActive();
+        user.setActive(false);
+        user.setDeleted(delete);
+        sent.add(createNotice("admin", action, "@" + key, "Audit"));
+        saveChanges(() -> {
+            user.setActive(wasActive);
+            user.setDeleted(false);
+            removed.forEach(Listing::setStatus);
+            reasons.forEach(Listing::setRemovalReason);
+            closed.forEach(Deal::setStatus);
+            notifications.removeAll(sent);
+        });
+    }
+
+    private static boolean involves(Deal deal, String username) {
+        return username.equals(deal.getBuyerUsername()) || username.equals(deal.getSellerUsername());
+    }
+
+    private User moderatedUser(String username) {
+        User user = findUser(username);
+        if (user == null || user.getRole() == UserRole.ADMIN || user.isDeleted()) {
+            throw new IllegalStateException("This buyer or seller account is unavailable.");
+        }
+        return user;
+    }
+
+    /** Renames account references together with the edited profile so history and chat stay linked. */
+    public synchronized void adminEditUser(String current, String username, String fullName,
+                                           String residence, String bio, String location) {
+        requireActor(UserRole.ADMIN);
+        User user = moderatedUser(current);
+        String old = user.getUsername();
+        String next = normalizeUsername(username);
+        String name = requireFullName(fullName);
+        if (next.isEmpty() || (!next.equals(old) && users.containsKey(next))) {
+            throw new IllegalArgumentException("Enter an available username.");
+        }
+        if (user.getRole() == UserRole.SELLER) {
+            validateLocation(location);
+        }
+        String priorName = user.getFullName();
+        String priorResidence = user.getResidenceHall();
+        String priorBio = user.getBio();
+        String priorLocation = user.getPreferredMeetup();
+        renameUser(user, old, next, name);
+        if (user.getRole() == UserRole.SELLER) {
+            user.setBio(bio);
+            user.setPreferredMeetup(location);
+        } else {
+            user.setResidenceHall(residence);
+        }
+        Notification notice = createNotice("admin", "Account Edited", "@" + old + " → @" + next, "Audit");
+        saveChanges(() -> {
+            notifications.remove(notice);
+            renameUser(user, next, old, priorName);
+            user.setResidenceHall(priorResidence);
+            user.setBio(priorBio);
+            user.setPreferredMeetup(priorLocation);
+        });
+    }
+
+    private void renameUser(User user, String before, String after, String name) {
+        users.remove(before);
+        user.setUsername(after);
+        user.setFullName(name);
+        users.put(after, user);
+        listings.values().stream().filter(l -> before.equals(l.getSellerUsername())).forEach(l -> {
+            l.setSellerUsername(after);
+            l.setSellerFullName(name);
+        });
+        deals.forEach(d -> {
+            d.setBuyerUsername(renamed(d.getBuyerUsername(), before, after));
+            d.setSellerUsername(renamed(d.getSellerUsername(), before, after));
+        });
+        reviews.forEach(r -> {
+            r.setBuyerUsername(renamed(r.getBuyerUsername(), before, after));
+            r.setSellerUsername(renamed(r.getSellerUsername(), before, after));
+        });
+        notifications.forEach(n -> n.setUsername(renamed(n.getUsername(), before, after)));
+        messages.replaceAll(m -> new ChatMessage(m.listingId(), renamed(m.buyer(), before, after),
+                renamed(m.seller(), before, after), renamed(m.sender(), before, after), m.text(), m.proposalId(), m.sentAt()));
+        reports.replaceAll(r -> new ListingReport(r.listingId(), renamed(r.buyer(), before, after), r.reason(), r.filedAt()));
+    }
+
+    private static String renamed(String value, String before, String after) {
+        return before.equals(value) ? after : value;
     }
 
     private void addTextMessage(Listing listing, String buyer, String sender, String recipient, String text) {

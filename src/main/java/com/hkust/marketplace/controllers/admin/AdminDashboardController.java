@@ -12,11 +12,16 @@ import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
+import javafx.stage.FileChooser;
 
 import java.io.ByteArrayInputStream;
-import java.time.LocalDateTime;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 public class AdminDashboardController {
 
@@ -149,8 +154,7 @@ public class AdminDashboardController {
 
         Button addBtn = new Button("+ Add Listing (on behalf of seller)");
         addBtn.getStyleClass().add("btn-primary");
-        addBtn.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION,
-                "Admin can create a listing on behalf of a seller here.\nSame form fields as Seller Create Listing.\n(UI placeholder)").showAndWait());
+        addBtn.setOnAction(e -> editAdminListing(null));
         root.getChildren().add(addBtn);
 
         for (Listing l : DummyDataService.getInstance().getAllListings()) {
@@ -169,16 +173,19 @@ public class AdminDashboardController {
 
             Button edit = new Button("Edit");
             edit.getStyleClass().addAll("btn-outline", "btn-sm");
-            edit.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION, "Edit listing dialog (demo).").showAndWait());
+            edit.setOnAction(e -> editAdminListing(l));
 
             Button remove = new Button("Remove");
             remove.getStyleClass().addAll("btn-danger", "btn-sm");
+            remove.setDisable(l.getStatus() != ListingStatus.LIVE);
             remove.setOnAction(e -> {
-                Alert conf = new Alert(Alert.AlertType.CONFIRMATION, "Permanently remove this listing?");
-                conf.showAndWait().ifPresent(r -> {
-                    if (r == ButtonType.OK) {
-                        DummyDataService.getInstance().removeListing(l.getId());
-                        showAllListings();
+                TextInputDialog reason = new TextInputDialog();
+                reason.setTitle("Take down listing");
+                reason.setHeaderText("Enter the reason for taking down " + l.getTitle());
+                reason.showAndWait().ifPresent(value -> {
+                    if (confirm("Take down this live listing and notify buyers with open offers?")) {
+                        runAdminAction(() -> DummyDataService.getInstance().adminTakeDown(l.getId(), value),
+                                this::showAllListings);
                     }
                 });
             });
@@ -189,6 +196,103 @@ public class AdminDashboardController {
         ScrollPane scroll = new ScrollPane(root);
         scroll.setFitToWidth(true);
         contentPane.getChildren().add(scroll);
+    }
+
+    private void editAdminListing(Listing original) {
+        var service = DummyDataService.getInstance();
+        Dialog<ButtonType> dialog = modal(original == null ? "Publish for a seller" : "Edit listing");
+        ComboBox<String> seller = new ComboBox<>(FXCollections.observableArrayList(service.getAllUsers().stream()
+                .filter(user -> user.getRole() == UserRole.SELLER && user.isActive()).map(User::getUsername).toList()));
+        ComboBox<ListingType> type = new ComboBox<>(FXCollections.observableArrayList(ListingType.values()));
+        TextField name = new TextField(original == null ? "" : original.getTitle());
+        TextArea description = new TextArea(original == null ? "" : original.getDescription());
+        description.setPrefRowCount(2);
+        ComboBox<String> category = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.CATEGORIES));
+        ComboBox<String> condition = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.CONDITIONS));
+        ComboBox<String> location = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.HKUST_LOCATIONS));
+        TextField price = new TextField();
+        TextField duration = new TextField();
+        List<byte[]> photos = new ArrayList<>();
+        Label photoCount = new Label();
+        if (original != null) {
+            type.setValue(original.getType());
+            category.setValue(original.getCategory());
+            condition.setValue(original.getCondition());
+            location.setValue(original.getMeetupLocation());
+            price.setText(Objects.toString(original.getPrice(), ""));
+            duration.setText(Objects.toString(original.getLendingSeconds(), ""));
+            photos.addAll(original.getPhotos());
+        }
+        photoCount.setText(photos.size() + " photos");
+        Button upload = new Button("Choose up to six photos");
+        upload.setOnAction(event -> {
+            FileChooser chooser = new FileChooser();
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Images", "*.jpg", "*.jpeg", "*.png", "*.gif"));
+            List<File> files = chooser.showOpenMultipleDialog(dialog.getDialogPane().getScene().getWindow());
+            if (files == null) {
+                return;
+            }
+            runAdminAction(() -> {
+                if (files.size() > 6) {
+                    throw new IllegalArgumentException("Choose up to six photos.");
+                }
+                List<byte[]> loaded = new ArrayList<>();
+                for (File file : files) {
+                    try {
+                        if (Files.size(file.toPath()) > 5 * 1024 * 1024) {
+                            throw new IllegalArgumentException("Choose photos up to 5 MB each.");
+                        }
+                        byte[] bytes = Files.readAllBytes(file.toPath());
+                        if (new Image(new ByteArrayInputStream(bytes), 128, 128, true, true).isError()) {
+                            throw new IllegalArgumentException("Cannot read photo: " + file.getName());
+                        }
+                        loaded.add(bytes);
+                    } catch (IOException failure) {
+                        throw new IllegalStateException("Could not read photo: " + file.getName(), failure);
+                    }
+                }
+                photos.clear();
+                photos.addAll(loaded);
+                photoCount.setText(photos.size() + " photos");
+            }, () -> {});
+        });
+        VBox fields = new VBox(6, new Label("Listing type"), type);
+        if (original == null) {
+            fields.getChildren().addAll(new Label("Seller"), seller);
+        }
+        HBox sale = new HBox(8, new Label("Price (HK$)"), price);
+        HBox loan = new HBox(8, new Label("Lending duration (seconds)"), duration);
+        sale.visibleProperty().bind(type.valueProperty().isEqualTo(ListingType.SELL));
+        loan.visibleProperty().bind(type.valueProperty().isEqualTo(ListingType.LEND));
+        sale.managedProperty().bind(sale.visibleProperty());
+        loan.managedProperty().bind(loan.visibleProperty());
+        fields.getChildren().addAll(new Label("Item name"), name, new Label("Description"), description,
+                new Label("Category"), category, new Label("Condition"), condition, new Label("Meet-up location"),
+                location, sale, loan, new HBox(8, upload, photoCount));
+        dialog.getDialogPane().setContent(fields);
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+            return;
+        }
+        runAdminAction(() -> {
+            Listing draft = new Listing();
+            draft.setType(type.getValue());
+            draft.setTitle(name.getText().strip());
+            draft.setDescription(description.getText());
+            draft.setCategory(category.getValue());
+            draft.setCondition(condition.getValue());
+            draft.setMeetupLocation(location.getValue());
+            draft.setPhotos(photos);
+            if (draft.getType() == ListingType.SELL) {
+                draft.setPrice(Double.valueOf(price.getText()));
+            } else if (draft.getType() == ListingType.LEND) {
+                draft.setLendingSeconds(Long.valueOf(duration.getText()));
+            }
+            if (original == null) {
+                service.adminCreateListing(seller.getValue(), draft);
+            } else if (confirm("Apply this edit? Unaccepted proposals will close and their buyers will be notified.")) {
+                service.adminEditListing(original.getId(), draft);
+            }
+        }, this::showAllListings);
     }
 
     @FXML
@@ -217,28 +321,16 @@ public class AdminDashboardController {
 
             Button edit = new Button("Edit");
             edit.getStyleClass().addAll("btn-outline", "btn-sm");
-            edit.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION, "Edit user dialog (demo).").showAndWait());
+            edit.setOnAction(e -> editUser(u));
 
-            Button toggle = new Button(u.isActive() ? "Deactivate" : "Activate");
-            toggle.getStyleClass().addAll(u.isActive() ? "btn-danger" : "btn-success", "btn-sm");
-            toggle.setOnAction(e -> {
-                u.setActive(!u.isActive());
-                showUsers();
-            });
+            Button toggle = new Button("Deactivate");
+            toggle.getStyleClass().addAll("btn-danger", "btn-sm");
+            toggle.setDisable(!u.isActive());
+            toggle.setOnAction(e -> moderateUser(u, false));
 
             Button delete = new Button("Delete");
             delete.getStyleClass().addAll("btn-danger", "btn-sm");
-            delete.setOnAction(e -> {
-                Alert conf = new Alert(Alert.AlertType.CONFIRMATION,
-                        "Permanently delete user @" + u.getUsername() + "?");
-                conf.showAndWait().ifPresent(r -> {
-                    if (r == ButtonType.OK) {
-                        u.setActive(false);
-                        new Alert(Alert.AlertType.INFORMATION, "User deactivated (demo safety).").showAndWait();
-                        showUsers();
-                    }
-                });
-            });
+            delete.setOnAction(e -> moderateUser(u, true));
 
             row.getChildren().addAll(info, edit, toggle, delete);
             root.getChildren().add(row);
@@ -246,6 +338,55 @@ public class AdminDashboardController {
         ScrollPane scroll = new ScrollPane(root);
         scroll.setFitToWidth(true);
         contentPane.getChildren().add(scroll);
+    }
+
+    private void moderateUser(User user, boolean delete) {
+        String action = delete ? "Permanently remove" : "Deactivate";
+        if (confirm(action + " @" + user.getUsername() + "? Access and pending proposals will close. "
+                + "Relevant seller listings will be removed. Past records are retained.")) {
+            runAdminAction(() -> DummyDataService.getInstance().moderateAccount(user.getUsername(), delete), this::showUsers);
+        }
+    }
+
+    private void editUser(User user) {
+        Dialog<ButtonType> dialog = modal("Edit account");
+        TextField username = new TextField(user.getUsername());
+        TextField name = new TextField(user.getFullName());
+        TextField residence = new TextField(user.getResidenceHall());
+        TextField bio = new TextField(user.getBio());
+        ComboBox<String> location = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.HKUST_LOCATIONS));
+        location.setValue(user.getPreferredMeetup());
+        VBox fields = new VBox(8, new Label("Username"), username, new Label("Full name"), name);
+        if (user.getRole() == UserRole.BUYER) {
+            fields.getChildren().addAll(new Label("Residence"), residence);
+        } else {
+            fields.getChildren().addAll(new Label("Bio"), bio, new Label("Preferred meet-up location"), location);
+        }
+        dialog.getDialogPane().setContent(fields);
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+            runAdminAction(() -> DummyDataService.getInstance().adminEditUser(user.getUsername(), username.getText(),
+                    name.getText(), residence.getText(), bio.getText(), location.getValue()), this::showUsers);
+        }
+    }
+
+    private static Dialog<ButtonType> modal(String title) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle(title);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        return dialog;
+    }
+
+    private static boolean confirm(String prompt) {
+        return new Alert(Alert.AlertType.CONFIRMATION, prompt).showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK;
+    }
+
+    private static void runAdminAction(Runnable action, Runnable refresh) {
+        try {
+            action.run();
+            refresh.run();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
     }
 
     @FXML

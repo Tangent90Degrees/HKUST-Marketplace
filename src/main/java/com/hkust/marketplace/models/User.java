@@ -17,6 +17,7 @@ public class User implements java.io.Serializable {
     private String bio;             // Seller optional
     private String preferredMeetup; // Seller optional
     private boolean active = true;
+    private boolean deleted;
     private LocalDateTime createdAt;
     private double averageRating;   // For sellers
     private int ratingCount;
@@ -57,6 +58,8 @@ public class User implements java.io.Serializable {
 
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
+    public boolean isDeleted() { return deleted; }
+    public void setDeleted(boolean deleted) { this.deleted = deleted; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
