@@ -63,7 +63,7 @@ public class SellerDashboardController {
 
         User user = SessionManager.getCurrentUser();
         List<Listing> myListings = DummyDataService.getInstance()
-                .getListingsBySeller(user != null ? user.getUsername() : "");
+                .ownSellerListings();
 
         if (myListings.isEmpty()) {
             Label empty = new Label("You have not posted any listings yet.");
@@ -243,7 +243,7 @@ public class SellerDashboardController {
             }
         });
         HBox controls = new HBox(8, compose, send);
-        Listing listing = service.findListing(listingId);
+        Listing listing = service.listingForCurrentActor(listingId);
         if (listing.getStatus() == ListingStatus.LIVE && listing.getType() != ListingType.GIVEAWAY) {
             Deal terms = new Deal();
             terms.setListingId(listingId);
@@ -450,7 +450,7 @@ public class SellerDashboardController {
 
         User user = SessionManager.getCurrentUser();
         List<Listing> myListings = DummyDataService.getInstance()
-                .getListingsBySeller(user != null ? user.getUsername() : "");
+                .ownSellerListings();
 
         var service = DummyDataService.getInstance();
         var proposals = service.sellerProposals();

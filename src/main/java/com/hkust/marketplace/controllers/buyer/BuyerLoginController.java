@@ -1,10 +1,8 @@
 package com.hkust.marketplace.controllers.buyer;
 
-import com.hkust.marketplace.models.User;
 import com.hkust.marketplace.models.UserRole;
 import com.hkust.marketplace.utils.DummyDataService;
 import com.hkust.marketplace.utils.SceneManager;
-import com.hkust.marketplace.utils.SessionManager;
 import javafx.fxml.FXML;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
@@ -24,15 +22,13 @@ public class BuyerLoginController {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
-        User user;
         try {
-            user = DummyDataService.getInstance().authenticate(username, password, UserRole.BUYER);
+            DummyDataService.getInstance().signIn(username, password, UserRole.BUYER);
         } catch (IllegalArgumentException | IllegalStateException e) {
             showError(e.getMessage());
             return;
         }
 
-        SessionManager.login(user);
         SceneManager.showBuyerDashboard();
     }
 

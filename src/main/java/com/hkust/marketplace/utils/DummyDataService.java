@@ -11,6 +11,7 @@ import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.time.Duration;
 import java.time.ZoneId;
 import java.util.*;
@@ -309,11 +310,11 @@ public class DummyDataService {
         return users.containsKey(normalizeUsername(username));
     }
 
-    public User findUser(String username) {
+    User findUser(String username) {
         return users.get(normalizeUsername(username));
     }
 
-    public synchronized void registerUser(User user) {
+    synchronized void registerUser(User user) {
         if (user == null || user.getUsername() == null || user.getUsername().isBlank()) {
             throw new IllegalArgumentException("User username is required.");
         }
@@ -339,7 +340,7 @@ public class DummyDataService {
     }
 
     /** Checks credentials, active status, and portal role before returning the authenticated user. */
-    public synchronized User authenticate(String username, String password, UserRole portal) {
+    synchronized User authenticate(String username, String password, UserRole portal) {
         if (normalizeUsername(username).isEmpty() || password == null || password.isEmpty()) {
             throw new IllegalArgumentException("Please enter both username and password.");
         }
@@ -356,6 +357,11 @@ public class DummyDataService {
         return user;
     }
 
+    /** Opens a desktop session after authenticating against the requested portal. */
+    public synchronized void signIn(String username, String password, UserRole portal) {
+        SessionManager.login(authenticate(username, password, portal));
+    }
+
     /** Validates and updates only the active buyer's own name and optional password. */
     public synchronized void updateBuyerProfile(String fullName, String password, String confirmation) {
         updateProfile(requireActor(UserRole.BUYER), fullName, password, confirmation, null, null);
@@ -367,7 +373,7 @@ public class DummyDataService {
     }
 
     /** Registers and returns a validated seller account for the seller dashboard. */
-    public synchronized User registerSeller(String username, String fullName, String password,
+    synchronized User registerSeller(String username, String fullName, String password,
                                             String confirmation, String bio, String location) {
         validateLocation(location);
         String name = requireFullName(fullName);
@@ -377,6 +383,11 @@ public class DummyDataService {
         seller.setPreferredMeetup(location);
         registerUser(seller);
         return seller;
+    }
+
+    public synchronized void registerAndSignInSeller(String username, String fullName, String password,
+                                                     String confirmation, String bio, String location) {
+        SessionManager.login(registerSeller(username, fullName, password, confirmation, bio, location));
     }
 
     /** Updates the active seller's own profile and optional password. */
@@ -413,7 +424,7 @@ public class DummyDataService {
 
     private User requireActor(UserRole role) {
         User actor = SessionManager.getCurrentUser();
-        if (actor == null || actor.getRole() != role || !actor.isActive()
+        if (actor == null || SessionManager.authenticatedRole() != role || actor.getRole() != role || !actor.isActive()
                 || findUser(actor.getUsername()) != actor) {
             throw new SecurityException("An active " + role.name().toLowerCase(Locale.ROOT)
                     + " session is required.");
@@ -449,19 +460,13 @@ public class DummyDataService {
         return users.values().stream().filter(user -> !user.isDeleted()).toList();
     }
 
-    public List<User> getUsersByRole(UserRole role) {
-        return users.values().stream()
-                .filter(u -> u.getRole() == role)
-                .collect(Collectors.toList());
-    }
-
     // ========== Listing methods ==========
     public synchronized Collection<Listing> getAllListings() {
         requireActor(UserRole.ADMIN);
         return List.copyOf(listings.values());
     }
 
-    public List<Listing> getLiveListings() {
+    List<Listing> getLiveListings() {
         return listings.values().stream()
                 .filter(l -> l.getStatus() == ListingStatus.LIVE)
                 .collect(Collectors.toList());
@@ -474,14 +479,32 @@ public class DummyDataService {
                 .collect(Collectors.toList());
     }
 
-    public List<Listing> getListingsBySeller(String username) {
+    List<Listing> getListingsBySeller(String username) {
         return listings.values().stream()
                 .filter(l -> l.getSellerUsername().equalsIgnoreCase(username))
                 .collect(Collectors.toList());
     }
 
-    public Listing findListing(String id) {
+    Listing findListing(String id) {
         return listings.get(id);
+    }
+
+    public synchronized List<Listing> ownSellerListings() {
+        return getListingsBySeller(requireActor(UserRole.SELLER).getUsername());
+    }
+
+    /** Looks up a listing for the current role without incrementing the buyer detail counter. */
+    public synchronized Listing listingForCurrentActor(String id) {
+        UserRole role = SessionManager.authenticatedRole();
+        if (role == null) {
+            throw new SecurityException("Sign in to view listing records.");
+        }
+        User actor = requireActor(role);
+        return switch (role) {
+            case BUYER -> buyerListing(id, actor.getUsername());
+            case SELLER -> sellerListing(id, actor);
+            case ADMIN -> requireListing(id);
+        };
     }
 
     public enum CatalogOrder { NEWEST, PRICE_LOW, PRICE_HIGH }
@@ -1133,23 +1156,8 @@ public class DummyDataService {
         }
     }
 
-    public void addListing(Listing listing) {
-        if (listing.getId() == null) {
-            listing.setId("L" + listingIdCounter.getAndIncrement());
-        }
-        listings.put(listing.getId(), listing);
-    }
-
-    public void updateListing(Listing listing) {
-        listings.put(listing.getId(), listing);
-    }
-
-    public void removeListing(String id) {
-        listings.remove(id);
-    }
-
     // ========== Deal methods ==========
-    public List<Deal> getDealsForBuyer(String username) {
+    List<Deal> getDealsForBuyer(String username) {
         return deals.stream()
                 .filter(d -> d.getBuyerUsername().equalsIgnoreCase(username))
                 .collect(Collectors.toList());
@@ -1366,30 +1374,75 @@ public class DummyDataService {
                 .orElseThrow(() -> new IllegalStateException("This review is no longer eligible."));
     }
 
-    public List<Deal> getAllDeals() {
-        return new ArrayList<>(deals);
+    /** Returns admitted and completed deals for the administrator with inclusive Hong Kong dates. */
+    public synchronized List<Deal> adminDealRecords(String query, ListingType type, String status,
+                                                    LocalDate from, LocalDate to) {
+        requireActor(UserRole.ADMIN);
+        validateDateRange(from, to);
+        String keyword = normalizedKeyword(query);
+        return deals.stream().filter(d -> d.isCompleted() || "Accepted".equals(d.getStatus()))
+                .filter(d -> normalizedKeyword(d.getListingTitle() + " " + d.getBuyerUsername() + " "
+                        + d.getSellerUsername()).contains(keyword))
+                .filter(d -> type == null || d.getDealType() == type)
+                .filter(d -> status == null || status.equals(d.getStatus()))
+                .filter(d -> dateMatches(d.getStartedAt(), from, to)).toList();
     }
 
-    public void addDeal(Deal deal) {
-        if (deal.getId() == null) {
-            deal.setId("D" + dealIdCounter.getAndIncrement());
+    /** Filters ratings, including hidden submissions available to administrators. */
+    public synchronized List<Review> adminRatings(String query, Integer score, LocalDate from, LocalDate to) {
+        requireActor(UserRole.ADMIN);
+        validateDateRange(from, to);
+        if (score != null && (score < 1 || score > 5)) {
+            throw new IllegalArgumentException("Rating must be from 1 to 5.");
         }
-        deals.add(deal);
+        String keyword = normalizedKeyword(query);
+        return reviews.stream().filter(r -> normalizedKeyword(r.getBuyerUsername()).contains(keyword)
+                        || normalizedKeyword(r.getSellerUsername()).contains(keyword))
+                .filter(r -> score == null || r.getRating() == score)
+                .filter(r -> dateMatches(r.getCreatedAt(), from, to)).toList();
+    }
+
+    /** Hides a rating and its reply from public views while retaining the original record. */
+    public synchronized void hideRating(String id) {
+        requireActor(UserRole.ADMIN);
+        Review review = reviews.stream().filter(r -> id.equals(r.getId()) && !r.isHidden()).findFirst()
+                .orElseThrow(() -> new IllegalStateException("This rating is no longer visible."));
+        review.setHidden(true);
+        Notification notice = createNotice("admin", "Rating Hidden", review.getListingTitle(), "Audit")
+                .link(Reference.REVIEW, id);
+        saveChanges(() -> {
+            review.setHidden(false);
+            notifications.remove(notice);
+        });
+    }
+
+    private static boolean dateMatches(LocalDateTime time, LocalDate from, LocalDate to) {
+        if (from == null && to == null) {
+            return true;
+        }
+        if (time == null) {
+            return false;
+        }
+        LocalDate date = time.toLocalDate();
+        return (from == null || !date.isBefore(from)) && (to == null || !date.isAfter(to));
+    }
+
+    private static void validateDateRange(LocalDate from, LocalDate to) {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new IllegalArgumentException("Start date must be on or before end date.");
+        }
+    }
+
+    private static String normalizedKeyword(String value) {
+        return value == null ? "" : value.strip().toLowerCase(Locale.ROOT);
     }
 
     // ========== Notification methods ==========
-    public List<Notification> getNotificationsFor(String username) {
+    List<Notification> getNotificationsFor(String username) {
         return notifications.stream()
                 .filter(n -> n.getUsername().equalsIgnoreCase(username))
                 .sorted(Comparator.comparing(Notification::getTimestamp).reversed())
                 .collect(Collectors.toList());
-    }
-
-    public void addNotification(Notification n) {
-        if (n.getId() == null) {
-            n.setId("N" + notifIdCounter.getAndIncrement());
-        }
-        notifications.add(n);
     }
 
     // ========== Review methods ==========
@@ -1397,17 +1450,6 @@ public class DummyDataService {
         return reviews.stream()
                 .filter(r -> r.getSellerUsername().equalsIgnoreCase(username) && !r.isHidden())
                 .collect(Collectors.toList());
-    }
-
-    public List<Review> getAllReviews() {
-        return new ArrayList<>(reviews);
-    }
-
-    public void addReview(Review r) {
-        if (r.getId() == null) {
-            r.setId("R" + reviewIdCounter.getAndIncrement());
-        }
-        reviews.add(r);
     }
 
     /** Validates the documented password policy for account creation and password changes. */

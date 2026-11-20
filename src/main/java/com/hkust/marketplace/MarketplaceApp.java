@@ -20,7 +20,8 @@ public class MarketplaceApp extends Application {
     @Override
     public void start(Stage primaryStage) {
         try {
-            Path dataFile = Path.of(System.getProperty("user.home"), ".hkust-marketplace", "marketplace.data");
+            Path defaultFile = Path.of(System.getProperty("user.home"), ".hkust-marketplace", "marketplace.data");
+            Path dataFile = Path.of(System.getProperty("marketplace.data", defaultFile.toString()));
             DummyDataService.getInstance().openLocalStorage(dataFile);
         } catch (IllegalStateException failure) {
             new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();

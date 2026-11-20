@@ -1,9 +1,7 @@
 package com.hkust.marketplace.controllers.seller;
 
-import com.hkust.marketplace.models.User;
 import com.hkust.marketplace.utils.DummyDataService;
 import com.hkust.marketplace.utils.SceneManager;
-import com.hkust.marketplace.utils.SessionManager;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
 import javafx.scene.control.*;
@@ -27,16 +25,14 @@ public class SellerRegisterController {
     @FXML
     private void handleRegister() {
         hideMessages();
-        User user;
         try {
-            user = DummyDataService.getInstance().registerSeller(usernameField.getText(), fullNameField.getText(),
+            DummyDataService.getInstance().registerAndSignInSeller(usernameField.getText(), fullNameField.getText(),
                     passwordField.getText(), confirmPasswordField.getText(), bioArea.getText(), meetupCombo.getValue());
         } catch (IllegalArgumentException | IllegalStateException failure) {
             showError(failure.getMessage());
             return;
         }
         new Alert(Alert.AlertType.INFORMATION, "Seller account created.").showAndWait();
-        SessionManager.login(user);
         SceneManager.showSellerDashboard();
     }
 

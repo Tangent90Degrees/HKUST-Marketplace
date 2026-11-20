@@ -7,10 +7,11 @@ import com.hkust.marketplace.models.UserRole;
  * Holds the authenticated actor for the desktop UI or the current service call thread.
  */
 public class SessionManager {
-    private static final ThreadLocal<User> CURRENT = new ThreadLocal<>();
+    private record Session(User user, UserRole role) {}
+    private static final ThreadLocal<Session> CURRENT = new ThreadLocal<>();
 
-    public static void login(User user) {
-        CURRENT.set(user);
+    static void login(User user) {
+        CURRENT.set(new Session(user, user.getRole()));
     }
 
     public static void logout() {
@@ -18,7 +19,13 @@ public class SessionManager {
     }
 
     public static User getCurrentUser() {
-        return CURRENT.get();
+        Session session = CURRENT.get();
+        return session == null ? null : session.user();
+    }
+
+    static UserRole authenticatedRole() {
+        Session session = CURRENT.get();
+        return session == null ? null : session.role();
     }
 
     public static boolean isLoggedIn() {
@@ -39,6 +46,6 @@ public class SessionManager {
 
     private static boolean isRole(UserRole role) {
         User actor = getCurrentUser();
-        return actor != null && actor.getRole() == role;
+        return actor != null && actor.isActive() && authenticatedRole() == role;
     }
 }

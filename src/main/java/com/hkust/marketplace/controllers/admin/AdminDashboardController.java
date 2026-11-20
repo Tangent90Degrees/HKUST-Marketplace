@@ -3,6 +3,7 @@ package com.hkust.marketplace.controllers.admin;
 import com.hkust.marketplace.models.*;
 import com.hkust.marketplace.utils.DummyDataService;
 import com.hkust.marketplace.utils.SceneManager;
+import com.hkust.marketplace.utils.NotificationBoard;
 import com.hkust.marketplace.utils.SessionManager;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
@@ -393,111 +394,141 @@ public class AdminDashboardController {
     private void showDeals() {
         setActive(btnDeals, "All Deals Record");
         contentPane.getChildren().clear();
-
-        VBox root = new VBox(12);
-        root.setPadding(new Insets(4));
-
-        HBox filters = new HBox(10);
-        filters.setAlignment(Pos.CENTER_LEFT);
+        var service = DummyDataService.getInstance();
         TextField search = new TextField();
-        search.setPromptText("Search by item / user...");
-        ComboBox<String> typeFilter = new ComboBox<>(FXCollections.observableArrayList("All Types", "Sell", "Lend", "Giveaway"));
-        typeFilter.getSelectionModel().selectFirst();
-        filters.getChildren().addAll(search, typeFilter);
-        root.getChildren().add(filters);
+        search.setPromptText("Item, buyer or seller");
+        ComboBox<ListingType> type = new ComboBox<>(FXCollections.observableArrayList(ListingType.values()));
+        type.setPromptText("Any type");
+        ComboBox<String> status = new ComboBox<>(FXCollections.observableArrayList("Accepted", "Completed", "Returned"));
+        status.setPromptText("Any status");
+        DatePicker from = new DatePicker();
+        from.setPromptText("From start date");
+        DatePicker to = new DatePicker();
+        to.setPromptText("Through start date");
+        Label feedback = new Label();
+        TableView<String[]> table = recordTable("Item", "Buyer", "Seller", "Deal type", "Start (HKT)", "Return / completion", "Status");
+        Runnable refresh = () -> {
+            try {
+                var matches = service.adminDealRecords(search.getText(), type.getValue(), status.getValue(), from.getValue(), to.getValue());
+                table.getItems().setAll(matches.stream().map(deal -> new String[]{deal.getListingTitle(),
+                        deal.getBuyerUsername(), deal.getSellerUsername(), deal.displayType(),
+                        displayTime(deal.getStartedAt()), displayTime(deal.getCompletedAt()), deal.getStatus()}).toList());
+                feedback.setText(matches.isEmpty() ? "No deal records match." : "");
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+                feedback.setText(failure.getMessage());
+            }
+        };
+        Button apply = new Button("Apply");
+        apply.setOnAction(event -> refresh.run());
+        Button clear = new Button("Clear");
+        clear.setOnAction(event -> {
+            search.clear();
+            type.setValue(null);
+            status.setValue(null);
+            from.setValue(null);
+            to.setValue(null);
+            refresh.run();
+        });
+        VBox root = new VBox(12, new FlowPane(8, 8, search, type, status, from, to, apply, clear), feedback, table);
+        VBox.setVgrow(table, Priority.ALWAYS);
+        contentPane.getChildren().setAll(root);
+        refresh.run();
+    }
 
+    private static TableView<String[]> recordTable(String... headers) {
         TableView<String[]> table = new TableView<>();
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
-        String[] headers = {"Item", "Buyer", "Seller", "Type", "Status", "Date"};
-        for (int i = 0; i < headers.length; i++) {
-            final int idx = i;
-            TableColumn<String[], String> col = new TableColumn<>(headers[i]);
-            col.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue()[idx]));
-            table.getColumns().add(col);
+        for (int index = 0; index < headers.length; index++) {
+            int columnIndex = index;
+            TableColumn<String[], String> column = new TableColumn<>(headers[index]);
+            column.setCellValueFactory(cell -> new javafx.beans.property.SimpleStringProperty(cell.getValue()[columnIndex]));
+            table.getColumns().add(column);
         }
-        table.setItems(FXCollections.observableArrayList(
-                new String[]{"Calculus Textbook", "alice", "charlie", "Sell", "Accepted", "2026-01-15"},
-                new String[]{"USB Hub", "bob", "diana", "Giveaway", "Completed", "2025-12-01"}
-        ));
-        root.getChildren().add(table);
-        contentPane.getChildren().add(root);
+        return table;
+    }
+
+    private static String displayTime(java.time.LocalDateTime time) {
+        return time == null ? "" : time.format(DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm:ss"));
     }
 
     @FXML
     private void showRatings() {
         setActive(btnRatings, "Seller Ratings Overview");
         contentPane.getChildren().clear();
-
-        VBox root = new VBox(12);
-        root.setPadding(new Insets(4));
-
-        HBox filters = new HBox(10);
-        TextField userFilter = new TextField();
-        userFilter.setPromptText("Filter by seller...");
-        ComboBox<String> scoreFilter = new ComboBox<>(FXCollections.observableArrayList(
-                "All scores", "5 stars", "4 stars", "3 stars", "2 stars", "1 star"));
-        scoreFilter.getSelectionModel().selectFirst();
-        filters.getChildren().addAll(userFilter, scoreFilter);
-        root.getChildren().add(filters);
-
-        for (Review r : DummyDataService.getInstance().getAllReviews()) {
-            HBox row = new HBox(12);
-            row.getStyleClass().add("card");
-            row.setAlignment(Pos.CENTER_LEFT);
-            row.setPadding(new Insets(12));
-
-            VBox info = new VBox(4);
-            HBox.setHgrow(info, Priority.ALWAYS);
-            Label stars = new Label("★".repeat(r.getRating()) + "☆".repeat(5 - r.getRating()) +
-                    "  @" + r.getSellerUsername() + " by @" + r.getBuyerUsername());
-            stars.setStyle("-fx-font-weight: bold;");
-            Label comment = new Label(r.getComment());
-            comment.setWrapText(true);
-            comment.setStyle("-fx-text-fill: #5a5a7a;");
-            info.getChildren().addAll(stars, comment);
-
-            Button hide = new Button(r.isHidden() ? "Unhide" : "Hide");
-            hide.getStyleClass().addAll("btn-outline", "btn-sm");
-            hide.setOnAction(e -> {
-                r.setHidden(!r.isHidden());
-                showRatings();
-            });
-            row.getChildren().addAll(info, hide);
-            root.getChildren().add(row);
-        }
-        ScrollPane scroll = new ScrollPane(root);
+        var service = DummyDataService.getInstance();
+        TextField user = new TextField();
+        user.setPromptText("Buyer or seller username");
+        ComboBox<Integer> score = new ComboBox<>(FXCollections.observableArrayList(1, 2, 3, 4, 5));
+        score.setPromptText("Any score");
+        DatePicker from = new DatePicker();
+        from.setPromptText("From submission date");
+        DatePicker to = new DatePicker();
+        to.setPromptText("Through submission date");
+        Label feedback = new Label();
+        VBox cards = new VBox(10);
+        ScrollPane scroll = new ScrollPane(cards);
         scroll.setFitToWidth(true);
-        contentPane.getChildren().add(scroll);
+        Runnable refresh = () -> renderRatings(service, user.getText(), score.getValue(),
+                from.getValue(), to.getValue(), cards, feedback);
+        Button apply = new Button("Apply");
+        apply.setOnAction(event -> refresh.run());
+        Button clear = new Button("Clear");
+        clear.setOnAction(event -> {
+            user.clear();
+            score.setValue(null);
+            from.setValue(null);
+            to.setValue(null);
+            refresh.run();
+        });
+        VBox root = new VBox(12, new FlowPane(8, 8, user, score, from, to, apply, clear), feedback, scroll);
+        VBox.setVgrow(scroll, Priority.ALWAYS);
+        contentPane.getChildren().setAll(root);
+        refresh.run();
+    }
+
+    private void renderRatings(DummyDataService service, String user, Integer score,
+                               java.time.LocalDate from, java.time.LocalDate to, VBox cards, Label feedback) {
+        List<Review> matches;
+        try {
+            matches = service.adminRatings(user, score, from, to);
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            feedback.setText(failure.getMessage());
+            return;
+        }
+        cards.getChildren().clear();
+        feedback.setText(matches.isEmpty() ? "No ratings match." : "");
+        for (Review review : matches) {
+            Label text = new Label(Objects.toString(review.getComment(), ""));
+            text.setWrapText(true);
+            VBox card = new VBox(6, new Label(review.getListingTitle() + " / " + review.getRating() + " of 5"),
+                    new Label("Buyer @" + review.getBuyerUsername() + " / Seller @" + review.getSellerUsername()
+                            + " / " + displayTime(review.getCreatedAt())),
+                    new Label(review.isHidden() ? "Hidden" : "Visible"), text);
+            card.getStyleClass().add("card");
+            if (review.isFlagged()) {
+                card.getChildren().add(new Label("Flagged by seller"));
+            }
+            if (review.getSellerReply() != null) {
+                card.getChildren().add(new Label("Seller reply: " + review.getSellerReply()));
+            }
+            if (!review.isHidden()) {
+                Button hide = new Button("Hide rating");
+                hide.setOnAction(event -> {
+                    if (confirm("Hide this rating and reply from public views?")) {
+                        runAdminAction(() -> service.hideRating(review.getId()),
+                                () -> renderRatings(service, user, score, from, to, cards, feedback));
+                    }
+                });
+                card.getChildren().add(hide);
+            }
+            cards.getChildren().add(card);
+        }
     }
 
     @FXML
     private void showNotifications() {
-        setActive(btnNotifications, "Admin Notifications");
-        contentPane.getChildren().clear();
-        VBox root = new VBox(12);
-        root.setPadding(new Insets(4));
-        List<Notification> notifs = DummyDataService.getInstance().getNotificationsFor("admin");
-        if (notifs.isEmpty()) {
-            root.getChildren().add(new Label("No notifications."));
-        } else {
-            for (Notification n : notifs) {
-                VBox item = new VBox(4);
-                item.getStyleClass().add("notif-item");
-                Label t = new Label(n.getTitle());
-                t.setStyle("-fx-font-weight: bold;");
-                Label m = new Label(n.getMessage());
-                m.setWrapText(true);
-                m.setStyle("-fx-text-fill: #5a5a7a;");
-                Label meta = new Label(n.getCategory() + " · " +
-                        n.getTimestamp().format(DateTimeFormatter.ofPattern("dd MMM HH:mm")));
-                meta.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 11px;");
-                item.getChildren().addAll(t, m, meta);
-                root.getChildren().add(item);
-            }
-        }
-        ScrollPane scroll = new ScrollPane(root);
-        scroll.setFitToWidth(true);
-        contentPane.getChildren().add(scroll);
+        setActive(btnNotifications, "Notification Board");
+        contentPane.getChildren().setAll(NotificationBoard.current(this::showNotifications));
     }
 
     @FXML

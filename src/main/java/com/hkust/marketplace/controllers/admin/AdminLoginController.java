@@ -1,10 +1,8 @@
 package com.hkust.marketplace.controllers.admin;
 
-import com.hkust.marketplace.models.User;
 import com.hkust.marketplace.models.UserRole;
 import com.hkust.marketplace.utils.DummyDataService;
 import com.hkust.marketplace.utils.SceneManager;
-import com.hkust.marketplace.utils.SessionManager;
 import javafx.fxml.FXML;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
@@ -23,14 +21,12 @@ public class AdminLoginController {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
-        User user;
         try {
-            user = DummyDataService.getInstance().authenticate(username, password, UserRole.ADMIN);
+            DummyDataService.getInstance().signIn(username, password, UserRole.ADMIN);
         } catch (IllegalArgumentException | IllegalStateException failure) {
             showError(failure.getMessage());
             return;
         }
-        SessionManager.login(user);
         SceneManager.showAdminDashboard();
     }
 

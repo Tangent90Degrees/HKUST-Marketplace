@@ -373,7 +373,7 @@ public class BuyerDashboardController {
         });
         details.setOnAction(event -> showListingDetails(deals.get(selection.getSelectedIndex()).getListingId()));
         chat.setOnAction(event -> {
-            Listing listing = service.findListing(deals.get(selection.getSelectedIndex()).getListingId());
+            Listing listing = service.listingForCurrentActor(deals.get(selection.getSelectedIndex()).getListingId());
             if (listing != null) {
                 tryAction(() -> showBuyerChat(listing), null);
             }
@@ -449,8 +449,8 @@ public class BuyerDashboardController {
                     .filter(deal -> deal.getCompletedAt() != null)
                     .filter(deal -> from.getValue() == null || !deal.getCompletedAt().toLocalDate().isBefore(from.getValue()))
                     .filter(deal -> to.getValue() == null || !deal.getCompletedAt().toLocalDate().isAfter(to.getValue()))
-                    .filter(deal -> category.getValue() == null || (service.findListing(deal.getListingId()) != null
-                            && category.getValue().equals(service.findListing(deal.getListingId()).getCategory())))
+                    .filter(deal -> category.getValue() == null || (service.listingForCurrentActor(deal.getListingId()) != null
+                            && category.getValue().equals(service.listingForCurrentActor(deal.getListingId()).getCategory())))
                     .filter(deal -> (deal.getListingTitle() + " " + deal.getSellerUsername() + " "
                             + service.sellerDisplayName(deal.getSellerUsername())).toLowerCase(java.util.Locale.ROOT).contains(keyword))
                     .map(deal -> new String[]{deal.getListingTitle(), service.sellerDisplayName(deal.getSellerUsername()),
