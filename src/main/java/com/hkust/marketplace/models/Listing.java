@@ -8,7 +8,9 @@ import java.util.List;
  * In-memory listing model.
  * TODO: Persist to database and add photo storage when backend is ready.
  */
-public class Listing {
+public class Listing implements java.io.Serializable {
+    private static final long serialVersionUID = 1L;
+
     private String id;
     private String title;
     private String description;
@@ -18,6 +20,7 @@ public class Listing {
     private String condition;          // New / Like New / Used / For Parts
     private Double price;              // Only for SELL
     private Integer lendingDays;       // Only for LEND
+    private Long lendingSeconds;
     private String meetupLocation;
     private String sellerUsername;
     private String sellerFullName;
@@ -26,6 +29,7 @@ public class Listing {
     private String rejectionReason;
     private int viewCount;
     private List<String> photoPaths = new ArrayList<>(); // Demo: placeholder paths
+    private List<byte[]> photos = new ArrayList<>();
 
     public Listing() {
         this.postedAt = LocalDateTime.now();
@@ -60,6 +64,10 @@ public class Listing {
 
     public Integer getLendingDays() { return lendingDays; }
     public void setLendingDays(Integer lendingDays) { this.lendingDays = lendingDays; }
+    public Long getLendingSeconds() {
+        return lendingSeconds != null || lendingDays == null ? lendingSeconds : lendingDays * 86_400L;
+    }
+    public void setLendingSeconds(Long seconds) { this.lendingSeconds = seconds; }
 
     public String getMeetupLocation() { return meetupLocation; }
     public void setMeetupLocation(String meetupLocation) { this.meetupLocation = meetupLocation; }
@@ -84,6 +92,10 @@ public class Listing {
 
     public List<String> getPhotoPaths() { return photoPaths; }
     public void setPhotoPaths(List<String> photoPaths) { this.photoPaths = photoPaths; }
+    public List<byte[]> getPhotos() { return photos.stream().map(byte[]::clone).toList(); }
+    public void setPhotos(List<byte[]> photos) {
+        this.photos = new ArrayList<>(photos.stream().map(byte[]::clone).toList());
+    }
 
     public String getPriceDisplay() {
         if (type == ListingType.SELL && price != null) {

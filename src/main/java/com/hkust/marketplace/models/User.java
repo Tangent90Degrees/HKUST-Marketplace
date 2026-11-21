@@ -6,7 +6,9 @@ import java.time.LocalDateTime;
  * Simple in-memory user model (no persistence).
  * TODO: Replace with real entity + repository when backend is added.
  */
-public class User {
+public class User implements java.io.Serializable {
+    private static final long serialVersionUID = 1L;
+
     private String username;
     private String fullName;
     private String passwordHash; // In real app: never store plaintext

@@ -1,9 +1,9 @@
 package com.hkust.marketplace.controllers.seller;
 
 import com.hkust.marketplace.models.User;
-import com.hkust.marketplace.models.UserRole;
 import com.hkust.marketplace.utils.DummyDataService;
 import com.hkust.marketplace.utils.SceneManager;
+import com.hkust.marketplace.utils.SessionManager;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
 import javafx.scene.control.*;
@@ -27,35 +27,21 @@ public class SellerRegisterController {
     @FXML
     private void handleRegister() {
         hideMessages();
-        String username = usernameField.getText().trim();
-        String fullName = fullNameField.getText().trim();
-        String password = passwordField.getText();
-        String confirm = confirmPasswordField.getText();
-
-        if (username.isEmpty()) { showError("Username is required."); return; }
-        if (DummyDataService.getInstance().usernameExists(username)) {
-            showError("Username already taken."); return;
+        User user;
+        try {
+            user = DummyDataService.getInstance().registerSeller(usernameField.getText(), fullNameField.getText(),
+                    passwordField.getText(), confirmPasswordField.getText(), bioArea.getText(), meetupCombo.getValue());
+        } catch (IllegalArgumentException | IllegalStateException failure) {
+            showError(failure.getMessage());
+            return;
         }
-        if (fullName.isEmpty()) { showError("Full Name cannot be empty."); return; }
-        String pwdCheck = DummyDataService.checkPasswordStrength(password);
-        if (!"OK".equals(pwdCheck)) { showError(pwdCheck); return; }
-        if (!password.equals(confirm)) { showError("Passwords do not match."); return; }
-
-        User user = new User(username.toLowerCase(), fullName, password, UserRole.SELLER);
-        if (meetupCombo.getValue() != null) user.setPreferredMeetup(meetupCombo.getValue());
-        if (bioArea.getText() != null && !bioArea.getText().isBlank()) user.setBio(bioArea.getText().trim());
-        DummyDataService.getInstance().registerUser(user);
-
-        showSuccess("Seller account created! You can now login.");
-        usernameField.clear(); fullNameField.clear(); passwordField.clear();
-        confirmPasswordField.clear(); meetupCombo.getSelectionModel().clearSelection(); bioArea.clear();
+        new Alert(Alert.AlertType.INFORMATION, "Seller account created.").showAndWait();
+        SessionManager.login(user);
+        SceneManager.showSellerDashboard();
     }
 
     private void showError(String msg) {
         errorLabel.setText(msg); errorLabel.setVisible(true); errorLabel.setManaged(true);
-    }
-    private void showSuccess(String msg) {
-        successLabel.setText(msg); successLabel.setVisible(true); successLabel.setManaged(true);
     }
     private void hideMessages() {
         errorLabel.setVisible(false); errorLabel.setManaged(false);

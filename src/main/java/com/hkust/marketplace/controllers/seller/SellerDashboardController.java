@@ -15,8 +15,15 @@ import javafx.scene.chart.PieChart;
 import javafx.scene.chart.XYChart;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+import javafx.scene.image.Image;
+import javafx.stage.FileChooser;
 
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 
 public class SellerDashboardController {
@@ -139,20 +146,61 @@ public class SellerDashboardController {
         condCombo.setPromptText("Condition *");
         condCombo.setMaxWidth(Double.MAX_VALUE);
         TextArea descArea = new TextArea();
-        descArea.setPromptText("Description");
+        descArea.setPromptText("Description *");
         descArea.setPrefRowCount(3);
 
         TextField priceField = new TextField();
         priceField.setPromptText("Price (HK$) – required for Sell");
         TextField daysField = new TextField();
-        daysField.setPromptText("Lending duration (days) – required for Lend");
+        daysField.setPromptText("Lending duration in seconds (minimum 5)");
 
         ComboBox<String> meetupCombo = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.HKUST_LOCATIONS));
         meetupCombo.setPromptText("Meet-up location *");
         meetupCombo.setMaxWidth(Double.MAX_VALUE);
 
-        Label photoNote = new Label("📷 Photos: up to 6 (UI placeholder – file chooser not wired in demo)");
-        photoNote.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 12px;");
+        List<byte[]> photos = new ArrayList<>();
+        Button choosePhotos = new Button("Choose photos");
+        Label photoNote = new Label("Up to 6 photos");
+        choosePhotos.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("Choose listing photos");
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Images", "*.jpg", "*.jpeg", "*.png", "*.gif"));
+            List<File> selected = chooser.showOpenMultipleDialog(form.getScene().getWindow());
+            if (selected == null) {
+                return;
+            }
+            try {
+                if (selected.size() > 6) {
+                    throw new IllegalArgumentException("Choose up to six photos.");
+                }
+                List<byte[]> nextPhotos = new ArrayList<>(selected.size());
+                for (File file : selected) {
+                    if (Files.size(file.toPath()) > 5 * 1024 * 1024) {
+                        throw new IllegalArgumentException("Choose photos up to 5 MB each.");
+                    }
+                    byte[] bytes = Files.readAllBytes(file.toPath());
+                    if (new Image(new ByteArrayInputStream(bytes), 128, 128, true, true).isError()) {
+                        throw new IllegalArgumentException("Cannot read photo: " + file.getName());
+                    }
+                    nextPhotos.add(bytes);
+                }
+                photos.clear();
+                photos.addAll(nextPhotos);
+                photoNote.setText(photos.size() + " photos selected");
+            } catch (IllegalArgumentException | IOException failure) {
+                new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+            }
+        });
+
+        Label priceLabel = new Label("Price (HK$)");
+        Label durationLabel = new Label("Lending duration (seconds)");
+        priceField.visibleProperty().bind(typeCombo.valueProperty().isEqualTo("Sell"));
+        daysField.visibleProperty().bind(typeCombo.valueProperty().isEqualTo("Lend"));
+        priceLabel.visibleProperty().bind(priceField.visibleProperty());
+        durationLabel.visibleProperty().bind(daysField.visibleProperty());
+        for (var field : List.of(priceField, daysField, priceLabel, durationLabel)) {
+            field.managedProperty().bind(field.visibleProperty());
+        }
 
         Button submitBtn = new Button("Submit for Review");
         submitBtn.getStyleClass().add("btn-gold");
@@ -163,16 +211,13 @@ public class SellerDashboardController {
                 new Alert(Alert.AlertType.WARNING, "Please fill all required fields.").showAndWait();
                 return;
             }
-            User user = SessionManager.getCurrentUser();
             Listing listing = new Listing();
             listing.setTitle(nameField.getText().trim());
             listing.setDescription(descArea.getText());
             listing.setCategory(catCombo.getValue());
             listing.setCondition(condCombo.getValue());
             listing.setMeetupLocation(meetupCombo.getValue());
-            listing.setSellerUsername(user.getUsername());
-            listing.setSellerFullName(user.getFullName());
-            listing.setStatus(ListingStatus.PENDING_REVIEW);
+            listing.setPhotos(photos);
 
             switch (typeCombo.getValue()) {
                 case "Sell" -> {
@@ -185,21 +230,26 @@ public class SellerDashboardController {
                 }
                 case "Lend" -> {
                     listing.setType(ListingType.LEND);
-                    try { listing.setLendingDays(Integer.parseInt(daysField.getText())); }
-                    catch (Exception ex) {
-                        new Alert(Alert.AlertType.WARNING, "Valid lending days required.").showAndWait();
+                    try { listing.setLendingSeconds(Long.parseLong(daysField.getText())); }
+                    catch (NumberFormatException ex) {
+                        new Alert(Alert.AlertType.WARNING, "Enter the lending duration in seconds.").showAndWait();
                         return;
                     }
                 }
                 default -> listing.setType(ListingType.GIVEAWAY);
             }
-            DummyDataService.getInstance().addListing(listing);
-            // Notify admin
-            DummyDataService.getInstance().addNotification(new Notification(
-                    "admin", "New Listing Submitted",
-                    user.getFullName() + " submitted '" + listing.getTitle() + "' for review.", "System"));
+            if (new Alert(Alert.AlertType.CONFIRMATION, "Submit this listing for administrator review?")
+                    .showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+                return;
+            }
+            try {
+                DummyDataService.getInstance().submitSellerListing(listing);
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+                new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+                return;
+            }
             new Alert(Alert.AlertType.INFORMATION,
-                    "Listing submitted! Status: Pending Review.\nAdmin will review shortly.\n(Demo – in-memory only)").showAndWait();
+                    "Listing submitted. Status: Pending Review.").showAndWait();
             showMyListings();
         });
 
@@ -209,10 +259,10 @@ public class SellerDashboardController {
                 new Label("Category *"), catCombo,
                 new Label("Condition *"), condCombo,
                 new Label("Description"), descArea,
-                new Label("Price (Sell only)"), priceField,
-                new Label("Lending Days (Lend only)"), daysField,
+                priceLabel, priceField,
+                durationLabel, daysField,
                 new Label("Meet-up Location *"), meetupCombo,
-                photoNote, submitBtn);
+                choosePhotos, photoNote, submitBtn);
 
         ScrollPane scroll = new ScrollPane(form);
         scroll.setFitToWidth(true);
@@ -368,6 +418,7 @@ public class SellerDashboardController {
         TextField name = new TextField(user != null ? user.getFullName() : "");
         PasswordField pass = new PasswordField();
         pass.setPromptText("New password (optional)");
+        PasswordField confirmation = new PasswordField();
         TextArea bio = new TextArea(user != null && user.getBio() != null ? user.getBio() : "");
         bio.setPrefRowCount(3);
         ComboBox<String> meetup = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.HKUST_LOCATIONS));
@@ -376,11 +427,22 @@ public class SellerDashboardController {
 
         Button save = new Button("Save Changes");
         save.getStyleClass().add("btn-gold");
-        save.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION, "Profile saved (demo).").showAndWait());
+        save.setOnAction(e -> {
+            try {
+                DummyDataService.getInstance().updateSellerProfile(
+                        name.getText(), pass.getText(), confirmation.getText(), bio.getText(), meetup.getValue());
+                pass.clear();
+                confirmation.clear();
+                new Alert(Alert.AlertType.INFORMATION, "Profile updated successfully.").showAndWait();
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+                new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+            }
+        });
 
         form.getChildren().addAll(
                 new Label("Full Name"), name,
                 new Label("New Password"), pass,
+                new Label("Confirm Password"), confirmation,
                 new Label("Bio"), bio,
                 new Label("Preferred Meet-up"), meetup,
                 save);

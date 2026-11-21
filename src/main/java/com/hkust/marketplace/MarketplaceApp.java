@@ -1,20 +1,27 @@
 package com.hkust.marketplace;
 
 import com.hkust.marketplace.utils.SceneManager;
+import com.hkust.marketplace.utils.DummyDataService;
 import javafx.application.Application;
+import javafx.scene.control.Alert;
 import javafx.stage.Stage;
+import java.nio.file.Path;
 
 /**
  * HKUST Marketplace - Main Application Entry Point
- * Frontend-only demo / skeleton for student development.
- *
- * This application provides a complete UI skeleton for the Buyer, Seller and Admin portals.
- * All data is in-memory / dummy. Backend integration points are marked with TODO comments.
+ * Opens local marketplace data and starts the JavaFX portal selector.
  */
 public class MarketplaceApp extends Application {
 
     @Override
     public void start(Stage primaryStage) {
+        try {
+            Path dataFile = Path.of(System.getProperty("user.home"), ".hkust-marketplace", "marketplace.data");
+            DummyDataService.getInstance().openLocalStorage(dataFile);
+        } catch (IllegalStateException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+            return;
+        }
         SceneManager.init(primaryStage);
         SceneManager.showWelcome();
         primaryStage.setTitle("HKUST Marketplace");

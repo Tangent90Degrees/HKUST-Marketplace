@@ -4,6 +4,8 @@ import com.hkust.marketplace.models.*;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -13,8 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * In-memory data store for the frontend demo.
- * All data is lost when the application closes.
+ * Shared marketplace service. The desktop entry point attaches the local snapshot store.
  */
 public class DummyDataService {
 
@@ -29,6 +30,7 @@ public class DummyDataService {
     private final List<Deal> deals = new ArrayList<>();
     private final List<Notification> notifications = new ArrayList<>();
     private final List<Review> reviews = new ArrayList<>();
+    private MarketplaceStorage storage;
 
     private final AtomicInteger listingIdCounter = new AtomicInteger(100);
     private final AtomicInteger dealIdCounter = new AtomicInteger(500);
@@ -67,12 +69,58 @@ public class DummyDataService {
             "New", "Like New", "Used", "For Parts"
     );
 
-    private DummyDataService() {
+    DummyDataService() {
         seedData();
     }
 
     public static DummyDataService getInstance() {
         return INSTANCE;
+    }
+
+    /** Opens the local data file, restoring existing records or persisting the initial demo data. */
+    public synchronized void openLocalStorage(Path file) {
+        MarketplaceStorage candidate = new MarketplaceStorage(file);
+        try {
+            MarketplaceStorage.Snapshot saved = candidate.load();
+            if (saved == null) {
+                candidate.save(snapshot());
+            } else {
+                users.clear();
+                users.putAll(saved.users());
+                listings.clear();
+                listings.putAll(saved.listings());
+                deals.clear();
+                deals.addAll(saved.deals());
+                notifications.clear();
+                notifications.addAll(saved.notifications());
+                reviews.clear();
+                reviews.addAll(saved.reviews());
+                listingIdCounter.set(saved.nextListing());
+                dealIdCounter.set(saved.nextDeal());
+                notifIdCounter.set(saved.nextNotification());
+                reviewIdCounter.set(saved.nextReview());
+            }
+            storage = candidate;
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not open the local marketplace data.", e);
+        }
+    }
+
+    private MarketplaceStorage.Snapshot snapshot() {
+        return new MarketplaceStorage.Snapshot(users, listings, deals, notifications, reviews,
+                listingIdCounter.get(), dealIdCounter.get(), notifIdCounter.get(), reviewIdCounter.get());
+    }
+
+    private void saveChanges(Runnable undo) {
+        if (storage == null) {
+            return;
+        }
+        try {
+            storage.save(snapshot());
+        } catch (IOException failure) {
+            undo.run();
+            throw new IllegalStateException("Could not save the marketplace changes.", failure);
+        }
     }
 
     public static String hashPassword(String password) {
@@ -259,6 +307,7 @@ public class DummyDataService {
         user.setPasswordHash(hashPassword(storedPassword));
         user.setUsername(normalizedUsername);
         users.put(normalizedUsername, user);
+        saveChanges(() -> users.remove(normalizedUsername));
     }
 
     /** Creates a validated buyer account. Authentication remains a separate action. */
@@ -291,17 +340,68 @@ public class DummyDataService {
 
     /** Validates and updates only the active buyer's own name and optional password. */
     public synchronized void updateBuyerProfile(String fullName, String password, String confirmation) {
-        User buyer = SessionManager.getCurrentUser();
-        if (buyer == null || buyer.getRole() != UserRole.BUYER || !buyer.isActive()
-                || findUser(buyer.getUsername()) != buyer) {
-            throw new SecurityException("An active buyer session is required.");
-        }
+        updateProfile(requireActor(UserRole.BUYER), fullName, password, confirmation, null, null);
+    }
+
+    /** Registers and returns a validated seller account for the seller dashboard. */
+    public synchronized User registerSeller(String username, String fullName, String password,
+                                            String confirmation, String bio, String location) {
+        validateLocation(location);
         String name = requireFullName(fullName);
+        requireNewPassword(password, confirmation);
+        User seller = new User(username, name, password, UserRole.SELLER);
+        seller.setBio(bio == null ? "" : bio.strip());
+        seller.setPreferredMeetup(location);
+        registerUser(seller);
+        return seller;
+    }
+
+    /** Updates the active seller's own profile and optional password. */
+    public synchronized void updateSellerProfile(String fullName, String password, String confirmation,
+                                                 String bio, String location) {
+        User seller = requireActor(UserRole.SELLER);
+        validateLocation(location);
+        updateProfile(seller, fullName, password, confirmation, bio == null ? "" : bio.strip(), location);
+    }
+
+    private void updateProfile(User user, String fullName, String password, String confirmation,
+                               String bio, String location) {
+        String name = requireFullName(fullName);
+        String priorHash = user.getPasswordHash();
+        String priorName = user.getFullName();
+        String priorBio = user.getBio();
+        String priorLocation = user.getPreferredMeetup();
         if (!"".equals(password) || !"".equals(confirmation)) {
             requireNewPassword(password, confirmation);
-            buyer.setPasswordHash(hashPassword(password));
+            user.setPasswordHash(hashPassword(password));
         }
-        buyer.setFullName(name);
+        user.setFullName(name);
+        if (user.getRole() == UserRole.SELLER) {
+            user.setBio(bio);
+            user.setPreferredMeetup(location);
+        }
+        saveChanges(() -> {
+            user.setFullName(priorName);
+            user.setPasswordHash(priorHash);
+            user.setBio(priorBio);
+            user.setPreferredMeetup(priorLocation);
+        });
+    }
+
+    private User requireActor(UserRole role) {
+        User actor = SessionManager.getCurrentUser();
+        if (actor == null || actor.getRole() != role || !actor.isActive()
+                || findUser(actor.getUsername()) != actor) {
+            throw new SecurityException("An active " + role.name().toLowerCase(Locale.ROOT)
+                    + " session is required.");
+        }
+        return actor;
+    }
+
+    private static void validateLocation(String location) {
+        if (location != null && !HKUST_LOCATIONS.contains(location)) {
+            throw new IllegalArgumentException("Select a valid HKUST meet-up location.");
+        }
     }
 
     private static String requireFullName(String fullName) {
@@ -356,6 +456,51 @@ public class DummyDataService {
 
     public Listing findListing(String id) {
         return listings.get(id);
+    }
+
+    /** Saves a pending seller listing and its administrator notification together. */
+    public synchronized void submitSellerListing(Listing draft) {
+        User seller = requireActor(UserRole.SELLER);
+        validateListing(draft);
+        if (draft.getId() != null) {
+            throw new IllegalArgumentException("Submit a new listing.");
+        }
+        draft.setSellerUsername(seller.getUsername());
+        draft.setSellerFullName(seller.getFullName());
+        draft.setStatus(ListingStatus.PENDING_REVIEW);
+        draft.setId("L" + listingIdCounter.getAndIncrement());
+        listings.put(draft.getId(), draft);
+        Notification notice = new Notification("admin", "New Listing Submitted",
+                seller.getFullName() + " submitted '" + draft.getTitle() + "' for review.", "Listing");
+        notice.setId("N" + notifIdCounter.getAndIncrement());
+        notifications.add(notice);
+        saveChanges(() -> {
+            notifications.remove(notice);
+            listings.remove(draft.getId());
+            draft.setId(null);
+        });
+    }
+
+    private static void validateListing(Listing draft) {
+        if (draft.getType() == null || draft.getTitle() == null || draft.getTitle().isBlank()
+                || draft.getDescription() == null || draft.getDescription().isBlank()
+                || !CATEGORIES.contains(draft.getCategory() == null ? "" : draft.getCategory())
+                || !CONDITIONS.contains(draft.getCondition() == null ? "" : draft.getCondition())
+                || !HKUST_LOCATIONS.contains(draft.getMeetupLocation() == null ? "" : draft.getMeetupLocation())) {
+            throw new IllegalArgumentException("Fill in all required listing fields.");
+        }
+        if (draft.getType() == ListingType.SELL && (draft.getPrice() == null
+                || !Double.isFinite(draft.getPrice()) || draft.getPrice() <= 0)) {
+            throw new IllegalArgumentException("The sale price must be positive.");
+        }
+        if (draft.getType() == ListingType.LEND && (draft.getLendingSeconds() == null
+                || draft.getLendingSeconds() < 5)) {
+            throw new IllegalArgumentException("The lending duration must be at least five seconds.");
+        }
+        List<byte[]> photos = draft.getPhotos();
+        if (photos.size() > 6 || photos.stream().anyMatch(p -> p.length == 0 || p.length > 5 * 1024 * 1024)) {
+            throw new IllegalArgumentException("Attach up to six photos, up to 5 MB each.");
+        }
     }
 
     public void addListing(Listing listing) {

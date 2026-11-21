@@ -23,25 +23,11 @@ public class SellerLoginController {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
-        if (username.isEmpty() || password.isEmpty()) {
-            showError("Please enter both username and password.");
-            return;
-        }
-        User user = DummyDataService.getInstance().findUser(username);
-        if (user == null) {
-            showError("User not found.");
-            return;
-        }
-        if (user.getRole() != UserRole.SELLER) {
-            showError("This account is not a Seller account. Use the correct portal.");
-            return;
-        }
-        if (!DummyDataService.getInstance().verifyPassword(user, password)) {
-            showError("Incorrect password.");
-            return;
-        }
-        if (!user.isActive()) {
-            showError("Account deactivated.");
+        User user;
+        try {
+            user = DummyDataService.getInstance().authenticate(username, password, UserRole.SELLER);
+        } catch (IllegalArgumentException | IllegalStateException failure) {
+            showError(failure.getMessage());
             return;
         }
         SessionManager.login(user);

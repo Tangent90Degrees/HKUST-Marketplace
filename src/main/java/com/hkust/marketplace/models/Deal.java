@@ -3,7 +3,9 @@ package com.hkust.marketplace.models;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-public class Deal {
+public class Deal implements java.io.Serializable {
+    private static final long serialVersionUID = 1L;
+
     private String id;
     private String listingId;
     private String listingTitle;

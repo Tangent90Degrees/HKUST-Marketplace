@@ -2,7 +2,9 @@ package com.hkust.marketplace.models;
 
 import java.time.LocalDateTime;
 
-public class Notification {
+public class Notification implements java.io.Serializable {
+    private static final long serialVersionUID = 1L;
+
     private String id;
     private String username; // recipient
     private String title;
