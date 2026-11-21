@@ -357,24 +357,24 @@ public class BuyerDashboardController {
         newPass.setPromptText("New password (leave blank to keep)");
         PasswordField confirmPass = new PasswordField();
         confirmPass.setPromptText("Confirm new password");
-        ComboBox<String> residence = new ComboBox<>(FXCollections.observableArrayList(
-                "Hall 1", "Hall 2", "Hall 3", "Hall 4", "Hall 5",
-                "Hall 6", "Hall 7", "Hall 8", "Hall 9", "UG Hall 1", "UG Hall 2", "Off-campus"));
-        if (user != null && user.getResidenceHall() != null) {
-            residence.setValue(user.getResidenceHall());
-        }
-
         Button saveBtn = new Button("Save Changes");
         saveBtn.getStyleClass().add("btn-primary");
         saveBtn.setOnAction(e -> {
-            new Alert(Alert.AlertType.INFORMATION, "Profile updated successfully!\n(Demo only – changes are in-memory)").showAndWait();
+            try {
+                DummyDataService.getInstance().updateBuyerProfile(
+                        nameField.getText(), newPass.getText(), confirmPass.getText());
+                newPass.clear();
+                confirmPass.clear();
+                new Alert(Alert.AlertType.INFORMATION, "Profile updated successfully.").showAndWait();
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+                new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+            }
         });
 
         form.getChildren().addAll(title,
                 new Label("Full Name"), nameField,
                 new Label("New Password"), newPass,
                 new Label("Confirm Password"), confirmPass,
-                new Label("Residence"), residence,
                 saveBtn);
 
         contentPane.getChildren().add(form);

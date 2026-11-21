@@ -24,26 +24,11 @@ public class BuyerLoginController {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
-        if (username.isEmpty() || password.isEmpty()) {
-            showError("Please enter both username and password.");
-            return;
-        }
-
-        User user = DummyDataService.getInstance().findUser(username);
-        if (user == null) {
-            showError("User not found. Please check your username.");
-            return;
-        }
-        if (user.getRole() != UserRole.BUYER) {
-            showError("This account is not a Buyer account. Please use the correct portal.");
-            return;
-        }
-        if (!DummyDataService.getInstance().verifyPassword(user, password)) {
-            showError("Incorrect password. Please try again.");
-            return;
-        }
-        if (!user.isActive()) {
-            showError("This account has been deactivated. Contact admin.");
+        User user;
+        try {
+            user = DummyDataService.getInstance().authenticate(username, password, UserRole.BUYER);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            showError(e.getMessage());
             return;
         }
 

@@ -4,8 +4,9 @@ import com.hkust.marketplace.models.*;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,7 +19,7 @@ import java.util.stream.Collectors;
 public class DummyDataService {
 
     private static final String PASSWORD_HASH_PREFIX = "pbkdf2:";
-    private static final byte[] PASSWORD_SALT = "HKUST-Marketplace-demo-salt".getBytes(StandardCharsets.UTF_8);
+    private static final SecureRandom PASSWORD_RANDOM = new SecureRandom();
     private static final int PASSWORD_ITERATIONS = 120_000;
 
     private static final DummyDataService INSTANCE = new DummyDataService();
@@ -78,14 +79,23 @@ public class DummyDataService {
         if (password == null || password.isBlank()) {
             return "";
         }
+        byte[] salt = new byte[16];
+        PASSWORD_RANDOM.nextBytes(salt);
+        return PASSWORD_HASH_PREFIX + Base64.getEncoder().encodeToString(salt) + ":"
+                + Base64.getEncoder().encodeToString(derivePassword(password, salt));
+    }
+
+    /** Derives a 256-bit password hash from the supplied password and per-account salt. */
+    private static byte[] derivePassword(String password, byte[] salt) {
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, PASSWORD_ITERATIONS, 256);
         try {
-            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), PASSWORD_SALT, PASSWORD_ITERATIONS, 256);
-            byte[] hash = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
                     .generateSecret(spec)
                     .getEncoded();
-            return PASSWORD_HASH_PREFIX + Base64.getEncoder().encodeToString(hash);
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("Unable to hash password.", e);
+        } finally {
+            spec.clearPassword();
         }
     }
 
@@ -94,14 +104,21 @@ public class DummyDataService {
             return false;
         }
         String stored = user.getPasswordHash();
-        if (stored == null || stored.isBlank()) {
+        if (stored == null || !stored.startsWith(PASSWORD_HASH_PREFIX)) {
             return false;
         }
-        String normalized = stored.trim();
-        if (normalized.equals(password)) {
-            return true;
+        String[] encoded = stored.substring(PASSWORD_HASH_PREFIX.length()).split(":", -1);
+        if (encoded.length != 2) {
+            return false;
         }
-        return normalized.equals(hashPassword(password));
+        try {
+            byte[] salt = Base64.getDecoder().decode(encoded[0]);
+            byte[] hash = Base64.getDecoder().decode(encoded[1]);
+            return salt.length == 16 && hash.length == 32
+                    && MessageDigest.isEqual(hash, derivePassword(password, salt));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     public boolean verifyPassword(String username, String password) {
@@ -230,17 +247,78 @@ public class DummyDataService {
         return users.get(normalizeUsername(username));
     }
 
-    public void registerUser(User user) {
+    public synchronized void registerUser(User user) {
         if (user == null || user.getUsername() == null || user.getUsername().isBlank()) {
             throw new IllegalArgumentException("User username is required.");
         }
         String normalizedUsername = normalizeUsername(user.getUsername());
-        String storedPassword = user.getPasswordHash();
-        if (storedPassword != null && !storedPassword.isBlank() && !storedPassword.startsWith(PASSWORD_HASH_PREFIX)) {
-            user.setPasswordHash(hashPassword(storedPassword));
+        if (users.containsKey(normalizedUsername)) {
+            throw new IllegalArgumentException("Username already taken. Please choose another.");
         }
+        String storedPassword = user.getPasswordHash();
+        user.setPasswordHash(hashPassword(storedPassword));
         user.setUsername(normalizedUsername);
         users.put(normalizedUsername, user);
+    }
+
+    /** Creates a validated buyer account. Authentication remains a separate action. */
+    public synchronized void registerBuyer(String username, String fullName, String password,
+                                           String confirmation, String residence) {
+        String name = requireFullName(fullName);
+        requireNewPassword(password, confirmation);
+        User buyer = new User(username, name, password, UserRole.BUYER);
+        buyer.setResidenceHall(residence);
+        registerUser(buyer);
+    }
+
+    /** Checks credentials, active status, and portal role before returning the authenticated user. */
+    public synchronized User authenticate(String username, String password, UserRole portal) {
+        if (normalizeUsername(username).isEmpty() || password == null || password.isEmpty()) {
+            throw new IllegalArgumentException("Please enter both username and password.");
+        }
+        User user = findUser(username);
+        if (!verifyPassword(user, password)) {
+            throw new IllegalArgumentException("Username or password is incorrect.");
+        }
+        if (user.getRole() != portal) {
+            throw new IllegalArgumentException("This account belongs to a different portal.");
+        }
+        if (!user.isActive()) {
+            throw new IllegalArgumentException("This account has been deactivated.");
+        }
+        return user;
+    }
+
+    /** Validates and updates only the active buyer's own name and optional password. */
+    public synchronized void updateBuyerProfile(String fullName, String password, String confirmation) {
+        User buyer = SessionManager.getCurrentUser();
+        if (buyer == null || buyer.getRole() != UserRole.BUYER || !buyer.isActive()
+                || findUser(buyer.getUsername()) != buyer) {
+            throw new SecurityException("An active buyer session is required.");
+        }
+        String name = requireFullName(fullName);
+        if (!"".equals(password) || !"".equals(confirmation)) {
+            requireNewPassword(password, confirmation);
+            buyer.setPasswordHash(hashPassword(password));
+        }
+        buyer.setFullName(name);
+    }
+
+    private static String requireFullName(String fullName) {
+        if (fullName == null || fullName.isBlank()) {
+            throw new IllegalArgumentException("Full name is required.");
+        }
+        return fullName.strip();
+    }
+
+    private static void requireNewPassword(String password, String confirmation) {
+        String error = checkPasswordStrength(password);
+        if (!"OK".equals(error)) {
+            throw new IllegalArgumentException(error);
+        }
+        if (!password.equals(confirmation)) {
+            throw new IllegalArgumentException("Passwords do not match.");
+        }
     }
 
     public Collection<User> getAllUsers() {
@@ -346,7 +424,7 @@ public class DummyDataService {
         reviews.add(r);
     }
 
-    // Password strength helper (demo)
+    /** Validates the documented password policy for account creation and password changes. */
     public static String checkPasswordStrength(String password) {
         if (password == null || password.isEmpty()) return "Password cannot be empty.";
         if (password.length() < 8) return "Password must be at least 8 characters.";
@@ -355,6 +433,9 @@ public class DummyDataService {
         boolean hasDigit = password.chars().anyMatch(Character::isDigit);
         if (!hasUpper || !hasLower || !hasDigit) {
             return "Password should contain uppercase, lowercase and a digit.";
+        }
+        if (password.codePoints().noneMatch(c -> !Character.isLetterOrDigit(c) && !Character.isWhitespace(c))) {
+            return "Password must contain a special character.";
         }
         return "OK";
     }

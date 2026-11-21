@@ -63,7 +63,8 @@ The demo app enforces these rules for new user passwords:
 - Must contain at least one uppercase letter
 - Must contain at least one lowercase letter
 - Must contain at least one digit
-- Passwords are hashed with PBKDF2 with HMAC-SHA256 before storage in the in-memory demo data layer
+- Must contain at least one special character that is neither a letter, a digit, nor whitespace
+- Passwords are hashed with PBKDF2 with HMAC-SHA256 and an individual random salt before storage
 
 ## Features Implemented (UI Only)
 
