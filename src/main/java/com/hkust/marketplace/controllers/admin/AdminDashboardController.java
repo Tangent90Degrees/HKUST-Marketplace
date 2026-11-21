@@ -9,8 +9,11 @@ import javafx.fxml.FXML;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 
+import java.io.ByteArrayInputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -76,7 +79,7 @@ public class AdminDashboardController {
         meta.setStyle("-fx-text-fill: #5a5a7a; -fx-font-size: 12px;");
 
         Label submitted = new Label("Submitted: " +
-                l.getPostedAt().format(DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm")));
+                l.getPostedAt().format(DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm")) + " · Pending Review");
         submitted.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 11px;");
 
         HBox actions = new HBox(10);
@@ -86,13 +89,7 @@ public class AdminDashboardController {
             Alert conf = new Alert(Alert.AlertType.CONFIRMATION, "Approve this listing?");
             conf.showAndWait().ifPresent(r -> {
                 if (r == ButtonType.OK) {
-                    l.setStatus(ListingStatus.LIVE);
-                    l.setReviewedAt(LocalDateTime.now());
-                    DummyDataService.getInstance().updateListing(l);
-                    DummyDataService.getInstance().addNotification(new Notification(
-                            l.getSellerUsername(), "Listing Approved",
-                            "Your listing '" + l.getTitle() + "' is now live!", "System"));
-                    showReview();
+                    review(l, true, null);
                 }
             });
         });
@@ -109,20 +106,37 @@ public class AdminDashboardController {
                     new Alert(Alert.AlertType.WARNING, "Reason is required.").showAndWait();
                     return;
                 }
-                l.setStatus(ListingStatus.REJECTED);
-                l.setRejectionReason(reason);
-                l.setReviewedAt(LocalDateTime.now());
-                DummyDataService.getInstance().updateListing(l);
-                DummyDataService.getInstance().addNotification(new Notification(
-                        l.getSellerUsername(), "Listing Rejected",
-                        "Your listing '" + l.getTitle() + "' was rejected. Reason: " + reason, "System"));
-                showReview();
+                if (new Alert(Alert.AlertType.CONFIRMATION, "Reject this listing?")
+                        .showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+                    review(l, false, reason);
+                }
             });
         });
 
         actions.getChildren().addAll(approve, reject);
-        card.getChildren().addAll(title, meta, submitted, actions);
+        card.getChildren().addAll(title, meta, submitted);
+        FlowPane photos = new FlowPane(8, 8);
+        for (byte[] bytes : l.getPhotos()) {
+            Image image = new Image(new ByteArrayInputStream(bytes), 160, 120, true, true);
+            if (!image.isError()) {
+                photos.getChildren().add(new ImageView(image));
+            }
+        }
+        if (!photos.getChildren().isEmpty()) {
+            card.getChildren().add(photos);
+        }
+        card.getChildren().add(actions);
         return card;
+    }
+
+    private void review(Listing listing, boolean approve, String reason) {
+        try {
+            DummyDataService.getInstance().reviewListing(listing.getId(), approve, reason);
+            new Alert(Alert.AlertType.INFORMATION, approve ? "Listing approved." : "Listing rejected.").showAndWait();
+            showReview();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
     }
 
     @FXML
@@ -361,10 +375,22 @@ public class AdminDashboardController {
         TextField name = new TextField(user != null ? user.getFullName() : "");
         PasswordField pass = new PasswordField();
         pass.setPromptText("New password (optional)");
+        PasswordField confirmation = new PasswordField();
         Button save = new Button("Save");
         save.getStyleClass().add("btn-success");
-        save.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION, "Profile updated (demo).").showAndWait());
-        form.getChildren().addAll(new Label("Full Name"), name, new Label("New Password"), pass, save);
+        save.setOnAction(e -> {
+            try {
+                DummyDataService.getInstance().updateAdminProfile(name.getText(), pass.getText(), confirmation.getText());
+                pass.clear();
+                confirmation.clear();
+                welcomeLabel.setText("Admin: " + user.getFullName());
+                new Alert(Alert.AlertType.INFORMATION, "Profile updated successfully.").showAndWait();
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+                new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+            }
+        });
+        form.getChildren().addAll(new Label("Full Name"), name, new Label("New Password"), pass,
+                new Label("Confirm Password"), confirmation, save);
         contentPane.getChildren().add(form);
     }
 
