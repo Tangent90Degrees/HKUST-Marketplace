@@ -23,11 +23,17 @@ public class AdminLoginController {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
-        User user;
-        try {
-            user = DummyDataService.getInstance().authenticate(username, password, UserRole.ADMIN);
-        } catch (IllegalArgumentException | IllegalStateException failure) {
-            showError(failure.getMessage());
+        if (username.isEmpty() || password.isEmpty()) {
+            showError("Please enter credentials.");
+            return;
+        }
+        User user = DummyDataService.getInstance().findUser(username);
+        if (user == null || user.getRole() != UserRole.ADMIN) {
+            showError("Invalid admin credentials.");
+            return;
+        }
+        if (!DummyDataService.getInstance().verifyPassword(user, password)) {
+            showError("Incorrect password.");
             return;
         }
         SessionManager.login(user);
