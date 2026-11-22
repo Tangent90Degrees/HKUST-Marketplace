@@ -258,6 +258,7 @@ public class DummyDataService {
         d1.setStatus("Accepted");
         d1.setOfferPrice(160.0);
         deals.add(d1);
+        l1.setStatus(ListingStatus.RESERVED);
 
         // Sample notifications
         notifications.add(new Notification("alice", "Offer Accepted",
@@ -600,6 +601,200 @@ public class DummyDataService {
         User buyer = requireActor(UserRole.BUYER);
         Listing listing = buyerListing(listingId, buyer.getUsername());
         addTextMessage(listing, buyer.getUsername(), buyer.getUsername(), listing.getSellerUsername(), text);
+    }
+
+    /** Returns the active seller's proposals for their own listings. */
+    public synchronized List<Deal> sellerProposals() {
+        User seller = requireActor(UserRole.SELLER);
+        return deals.stream().filter(d -> seller.getUsername().equals(d.getSellerUsername())).toList();
+    }
+
+    public enum SellerDecision { ACCEPT, DECLINE, COUNTER }
+
+    /** Confirms a pending proposal and records the state and notice together. */
+    public synchronized void decideProposal(String id, SellerDecision decision, Double price,
+                                              LocalDateTime start, LocalDateTime end, boolean fromChat) {
+        User seller = requireActor(UserRole.SELLER);
+        Deal proposal = sellerProposals().stream().filter(d -> id.equals(d.getId())).findFirst()
+                .orElseThrow(() -> new SecurityException("This proposal belongs to another seller."));
+        Listing listing = sellerListing(proposal.getListingId(), seller);
+        if (!"Pending".equals(proposal.getStatus())
+                || (decision != SellerDecision.DECLINE && listing.getStatus() != ListingStatus.LIVE)) {
+            throw new IllegalStateException("This proposal or listing is no longer available.");
+        }
+        if (decision == SellerDecision.COUNTER) {
+            if (proposal.getDealType() == ListingType.GIVEAWAY) {
+                throw new IllegalArgumentException("Giveaway claims cannot be countered.");
+            }
+            validateTerms(proposal.getDealType(), price, start, end);
+        }
+        Double previousPrice = proposal.getOfferPrice();
+        LocalDateTime previousStart = proposal.getRequestedStart();
+        LocalDateTime previousEnd = proposal.getRequestedEnd();
+        ListingStatus previousListingStatus = listing.getStatus();
+        Map<Deal, String> closed = new LinkedHashMap<>();
+        switch (decision) {
+            case ACCEPT -> {
+                proposal.setStatus("Accepted");
+                listing.setStatus(proposal.getDealType() == ListingType.LEND && !previousStart.isAfter(LocalDateTime.now(HONG_KONG))
+                        ? ListingStatus.LENT : ListingStatus.RESERVED);
+                for (Deal other : deals) {
+                    if (other != proposal && other.getListingId().equals(listing.getId()) && isOpenProposal(other)) {
+                        closed.put(other, other.getStatus());
+                        other.setStatus("Cancelled");
+                    }
+                }
+            }
+            case DECLINE -> proposal.setStatus("Declined");
+            case COUNTER -> {
+                proposal.setStatus("Countered");
+                proposal.setOfferPrice(price);
+                proposal.setRequestedPeriod(start, end);
+            }
+        }
+        Notification notice = createNotice(proposal.getBuyerUsername(), "Proposal " + proposal.getStatus(),
+                listing.getTitle() + ": " + proposal.terms(), "Offer");
+        ChatMessage formal = new ChatMessage(listing.getId(), proposal.getBuyerUsername(), seller.getUsername(),
+                seller.getUsername(), "Counter: " + proposal.terms(), proposal.getId(), LocalDateTime.now(HONG_KONG));
+        if (fromChat && decision == SellerDecision.COUNTER) {
+            messages.add(formal);
+        }
+        saveChanges(() -> {
+            proposal.setStatus("Pending");
+            proposal.setOfferPrice(previousPrice);
+            proposal.setRequestedPeriod(previousStart, previousEnd);
+            listing.setStatus(previousListingStatus);
+            closed.forEach(Deal::setStatus);
+            notifications.remove(notice);
+            messages.remove(formal);
+        });
+    }
+
+    private static boolean isOpenProposal(Deal deal) {
+        return "Pending".equals(deal.getStatus()) || "Countered".equals(deal.getStatus());
+    }
+
+    private Listing sellerListing(String id, User seller) {
+        Listing listing = findListing(id);
+        if (listing == null || !seller.getUsername().equals(listing.getSellerUsername())) {
+            throw new SecurityException("This listing belongs to another seller.");
+        }
+        return listing;
+    }
+
+    /** Lists existing buyers in this seller's listing conversation. */
+    public synchronized List<String> sellerChatBuyers(String listingId) {
+        User seller = requireActor(UserRole.SELLER);
+        sellerListing(listingId, seller);
+        Set<String> buyers = new LinkedHashSet<>();
+        deals.stream().filter(d -> listingId.equals(d.getListingId())).map(Deal::getBuyerUsername).forEach(buyers::add);
+        messages.stream().filter(m -> listingId.equals(m.listingId())).map(ChatMessage::buyer).forEach(buyers::add);
+        return List.copyOf(buyers);
+    }
+
+    public synchronized List<ChatMessage> sellerChat(String listingId, String buyer, String query) {
+        User seller = requireActor(UserRole.SELLER);
+        if (!sellerChatBuyers(listingId).contains(buyer)) {
+            throw new SecurityException("That conversation is unavailable.");
+        }
+        return searchChat(listingId, buyer, seller.getUsername(), query);
+    }
+
+    public synchronized void sendSellerMessage(String listingId, String buyer, String text) {
+        User seller = requireActor(UserRole.SELLER);
+        if (!sellerChatBuyers(listingId).contains(buyer)) {
+            throw new SecurityException("That conversation is unavailable.");
+        }
+        addTextMessage(sellerListing(listingId, seller), buyer, seller.getUsername(), buyer, text);
+    }
+
+    /** Offers sale or lending terms in an existing conversation without requiring a pending buyer offer. */
+    public synchronized void offerInSellerChat(String listingId, String buyer, Double price,
+                                               LocalDateTime start, LocalDateTime end) {
+        User seller = requireActor(UserRole.SELLER);
+        Listing listing = sellerListing(listingId, seller);
+        if (!sellerChatBuyers(listingId).contains(buyer) || listing.getStatus() != ListingStatus.LIVE
+                || listing.getType() == ListingType.GIVEAWAY) {
+            throw new IllegalStateException("Formal terms are unavailable for this conversation.");
+        }
+        validateTerms(listing.getType(), price, start, end);
+        var pending = sellerProposals().stream().filter(d -> listingId.equals(d.getListingId())
+                && buyer.equals(d.getBuyerUsername()) && "Pending".equals(d.getStatus())).findFirst();
+        if (pending.isPresent()) {
+            decideProposal(pending.get().getId(), SellerDecision.COUNTER, price, start, end, true);
+            return;
+        }
+        Deal proposal = new Deal();
+        proposal.setId("D" + dealIdCounter.getAndIncrement());
+        proposal.setListingId(listingId);
+        proposal.setListingTitle(listing.getTitle());
+        proposal.setBuyerUsername(buyer);
+        proposal.setSellerUsername(seller.getUsername());
+        proposal.setDealType(listing.getType());
+        proposal.setStatus("Countered");
+        proposal.setOfferPrice(price);
+        proposal.setRequestedPeriod(start, end);
+        deals.add(proposal);
+        ChatMessage message = new ChatMessage(listingId, buyer, seller.getUsername(), seller.getUsername(),
+                "Seller offer: " + proposal.terms(), proposal.getId(), LocalDateTime.now(HONG_KONG));
+        messages.add(message);
+        Notification notice = createNotice(buyer, "Seller offered terms", listing.getTitle() + ": " + proposal.terms(), "Offer");
+        saveChanges(() -> {
+            deals.remove(proposal);
+            messages.remove(message);
+            notifications.remove(notice);
+        });
+    }
+
+    public synchronized boolean sellerChangeRestricted(String id) {
+        Listing listing = sellerListing(id, requireActor(UserRole.SELLER));
+        return switch (listing.getStatus()) {
+            case RESERVED, SOLD, LENT, GIVEN -> true;
+            default -> deals.stream().anyMatch(d -> id.equals(d.getListingId()) && isOpenProposal(d));
+        };
+    }
+
+    /** Applies a confirmed seller edit, or removes the listing when edited is null. */
+    public synchronized void changeSellerListing(String id, Listing edited, boolean restrictedConfirmed) {
+        User seller = requireActor(UserRole.SELLER);
+        Listing original = sellerListing(id, seller);
+        if (original.getStatus() == ListingStatus.REMOVED) {
+            throw new IllegalStateException("This listing was already removed.");
+        }
+        if (sellerChangeRestricted(id) && !restrictedConfirmed) {
+            throw new IllegalStateException("Review the restriction warning before confirming the change.");
+        }
+        ListingStatus priorStatus = original.getStatus();
+        if (edited != null) {
+            validateListing(edited);
+            retainListingIdentity(original, edited);
+            listings.put(id, edited);
+        } else {
+            original.setStatus(ListingStatus.REMOVED);
+        }
+        List<Notification> sent = new ArrayList<>();
+        deals.stream().filter(d -> id.equals(d.getListingId()) && (isOpenProposal(d) || "Accepted".equals(d.getStatus())))
+                .map(Deal::getBuyerUsername).distinct().forEach(buyer -> sent.add(createNotice(buyer,
+                        "Seller changed a listing", original.getTitle() + (edited == null ? " was removed." : " was updated."),
+                        "Listing")));
+        saveChanges(() -> {
+            listings.put(id, original);
+            if (edited == null) {
+                original.setStatus(priorStatus);
+            }
+            notifications.removeAll(sent);
+        });
+    }
+
+    private static void retainListingIdentity(Listing original, Listing edited) {
+        edited.setId(original.getId());
+        edited.setSellerUsername(original.getSellerUsername());
+        edited.setSellerFullName(original.getSellerFullName());
+        edited.setStatus(original.getStatus());
+        edited.setPostedAt(original.getPostedAt());
+        edited.setReviewedAt(original.getReviewedAt());
+        edited.setRejectionReason(original.getRejectionReason());
+        edited.setViewCount(original.getViewCount());
     }
 
     private void addTextMessage(Listing listing, String buyer, String sender, String recipient, String text) {

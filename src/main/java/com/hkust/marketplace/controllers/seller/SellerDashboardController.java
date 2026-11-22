@@ -22,6 +22,8 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -71,6 +73,31 @@ public class SellerDashboardController {
                 root.getChildren().add(createListingRow(l));
             }
         }
+        root.getChildren().add(new Label("Incoming offers, requests, and claims"));
+        List<Deal> proposals = DummyDataService.getInstance().sellerProposals();
+        if (proposals.isEmpty()) {
+            root.getChildren().add(new Label("No proposals yet."));
+        }
+        for (Deal deal : proposals) {
+            VBox proposal = new VBox(6, new Label(deal.getListingTitle() + " / @" + deal.getBuyerUsername()),
+                    new Label(deal.terms() + " / " + deal.getStatus()));
+            proposal.getStyleClass().add("card");
+            Button chat = new Button("Open chat");
+            chat.setOnAction(event -> openSellerChat(deal.getListingId(), deal.getBuyerUsername()));
+            HBox controls = new HBox(8, chat);
+            if ("Pending".equals(deal.getStatus())) {
+                for (var decision : DummyDataService.SellerDecision.values()) {
+                    if (decision == DummyDataService.SellerDecision.COUNTER && deal.getDealType() == ListingType.GIVEAWAY) {
+                        continue;
+                    }
+                    Button decide = new Button(decision.name());
+                    decide.setOnAction(event -> decide(deal, decision, false));
+                    controls.getChildren().add(decide);
+                }
+            }
+            proposal.getChildren().add(controls);
+            root.getChildren().add(proposal);
+        }
         ScrollPane scroll = new ScrollPane(root);
         scroll.setFitToWidth(true);
         contentPane.getChildren().add(scroll);
@@ -101,28 +128,150 @@ public class SellerDashboardController {
 
         Button editBtn = new Button("Edit");
         editBtn.getStyleClass().addAll("btn-outline", "btn-sm");
-        editBtn.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION,
-                "Edit form would open here.\n(Demo placeholder)").showAndWait());
+        editBtn.setOnAction(e -> showListingForm(l));
 
         Button delBtn = new Button("Delete");
         delBtn.getStyleClass().addAll("btn-danger", "btn-sm");
-        delBtn.setOnAction(e -> {
-            Alert conf = new Alert(Alert.AlertType.CONFIRMATION, "Delete this listing?");
-            conf.showAndWait().ifPresent(r -> {
-                if (r == ButtonType.OK) {
-                    DummyDataService.getInstance().removeListing(l.getId());
-                    showMyListings();
-                }
-            });
+        delBtn.setOnAction(e -> changeListing(l, null));
+        editBtn.setDisable(l.getStatus() == ListingStatus.REMOVED);
+        delBtn.setDisable(l.getStatus() == ListingStatus.REMOVED);
+
+        Button chats = new Button("Chats");
+        chats.setOnAction(event -> {
+            List<String> buyers = DummyDataService.getInstance().sellerChatBuyers(l.getId());
+            if (buyers.isEmpty()) {
+                new Alert(Alert.AlertType.INFORMATION, "No conversations for this listing.").showAndWait();
+            } else {
+                ChoiceDialog<String> choice = new ChoiceDialog<>(buyers.get(0), buyers);
+                choice.setTitle("Listing conversations");
+                choice.showAndWait().ifPresent(buyer -> openSellerChat(l.getId(), buyer));
+            }
         });
 
-        row.getChildren().addAll(info, status, editBtn, delBtn);
+        row.getChildren().addAll(info, status, chats, editBtn, delBtn);
         return row;
+    }
+
+    private void changeListing(Listing original, Listing replacement) {
+        var service = DummyDataService.getInstance();
+        try {
+            boolean restricted = service.sellerChangeRestricted(original.getId());
+            String prompt = replacement == null ? "Delete this listing?" : "Save these listing changes?";
+            if (restricted) {
+                prompt += "\nThis listing is restricted. Affected buyers will be notified if you continue.";
+            }
+            if (new Alert(Alert.AlertType.CONFIRMATION, prompt).showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+                service.changeSellerListing(original.getId(), replacement, restricted);
+                showMyListings();
+            }
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
+    }
+
+    private void decide(Deal deal, DummyDataService.SellerDecision decision, boolean fromChat) {
+        if (decision == DummyDataService.SellerDecision.COUNTER) {
+            TextInputDialog prompt = new TextInputDialog(deal.getDealType() == ListingType.SELL
+                    ? String.valueOf(deal.getOfferPrice()) : deal.getRequestedStart() + " / " + deal.getRequestedEnd());
+            prompt.setTitle(fromChat ? "Send formal offer" : "Counter proposal");
+            prompt.setHeaderText(deal.getDealType() == ListingType.SELL ? "Offer price in HK$"
+                    : "Start / end in Hong Kong time (YYYY-MM-DDTHH:MM:SS)");
+            prompt.showAndWait().ifPresent(terms -> {
+                try {
+                    if (deal.getDealType() == ListingType.SELL) {
+                        saveDecision(deal, decision, Double.valueOf(terms.strip()), null, null, fromChat);
+                    } else {
+                        String[] period = terms.split("/", -1);
+                        if (period.length != 2) {
+                            throw new IllegalArgumentException("Enter both dates, separated by /.");
+                        }
+                        saveDecision(deal, decision, null, LocalDateTime.parse(period[0].strip()),
+                                LocalDateTime.parse(period[1].strip()), fromChat);
+                    }
+                } catch (IllegalArgumentException | DateTimeParseException failure) {
+                    new Alert(Alert.AlertType.ERROR, "Invalid counter terms. " + failure.getMessage()).showAndWait();
+                }
+            });
+        } else {
+            saveDecision(deal, decision, null, null, null, false);
+        }
+    }
+
+    private void saveDecision(Deal deal, DummyDataService.SellerDecision decision, Double price,
+                              LocalDateTime start, LocalDateTime end, boolean fromChat) {
+        if (new Alert(Alert.AlertType.CONFIRMATION, "Confirm " + decision.name().toLowerCase(java.util.Locale.ROOT) + "?")
+                .showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+            return;
+        }
+        try {
+            var service = DummyDataService.getInstance();
+            if (fromChat) {
+                service.offerInSellerChat(deal.getListingId(), deal.getBuyerUsername(), price, start, end);
+            } else {
+                service.decideProposal(deal.getId(), decision, price, start, end, false);
+            }
+            new Alert(Alert.AlertType.INFORMATION, "Proposal updated.").showAndWait();
+            showMyListings();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
+    }
+
+    private void openSellerChat(String listingId, String buyer) {
+        var service = DummyDataService.getInstance();
+        Dialog<Void> dialog = new Dialog<>();
+        dialog.setTitle("Chat with @" + buyer);
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+        TextField search = new TextField();
+        search.setPromptText("Search conversation");
+        TextField compose = new TextField();
+        compose.setPromptText("Write a message");
+        ListView<String> history = new ListView<>();
+        history.setPrefSize(520, 250);
+        Runnable reload = () -> history.getItems().setAll(service.sellerChat(listingId, buyer, search.getText()).stream()
+                .map(message -> message.sentAt() + " @" + message.sender() + ": " + message.text()).toList());
+        search.textProperty().addListener((property, oldValue, value) -> reload.run());
+        Button send = new Button("Send");
+        send.setOnAction(event -> {
+            try {
+                service.sendSellerMessage(listingId, buyer, compose.getText());
+                compose.clear();
+                reload.run();
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+                new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+            }
+        });
+        HBox controls = new HBox(8, compose, send);
+        Listing listing = service.findListing(listingId);
+        if (listing.getStatus() == ListingStatus.LIVE && listing.getType() != ListingType.GIVEAWAY) {
+            Deal terms = new Deal();
+            terms.setListingId(listingId);
+            terms.setBuyerUsername(buyer);
+            terms.setDealType(listing.getType());
+            terms.setOfferPrice(listing.getPrice());
+            var now = LocalDateTime.now(java.time.ZoneId.of("Asia/Hong_Kong")).withNano(0);
+            if (listing.getType() == ListingType.LEND) {
+                terms.setRequestedPeriod(now, now.plusSeconds(listing.getLendingSeconds()));
+            }
+            Button offer = new Button("Send formal offer");
+            offer.setOnAction(event -> {
+                decide(terms, DummyDataService.SellerDecision.COUNTER, true);
+                reload.run();
+            });
+            controls.getChildren().add(offer);
+        }
+        reload.run();
+        dialog.getDialogPane().setContent(new VBox(10, search, history, controls));
+        dialog.showAndWait();
     }
 
     @FXML
     private void showCreateListing() {
-        setActive(btnCreate, "Create New Listing");
+        showListingForm(null);
+    }
+
+    private void showListingForm(Listing original) {
+        setActive(original == null ? btnCreate : btnListings, original == null ? "Create New Listing" : "Edit Listing");
         contentPane.getChildren().clear();
 
         VBox form = new VBox(12);
@@ -130,7 +279,7 @@ public class SellerDashboardController {
         form.getStyleClass().add("card");
         form.setPadding(new Insets(20));
 
-        Label title = new Label("Post a new item");
+        Label title = new Label(original == null ? "Post a new item" : "Edit " + original.getTitle());
         title.getStyleClass().add("section-title");
 
         ComboBox<String> typeCombo = new ComboBox<>(FXCollections.observableArrayList("Sell", "Lend", "Give Away"));
@@ -203,6 +352,23 @@ public class SellerDashboardController {
         }
 
         Button submitBtn = new Button("Submit for Review");
+        if (original != null) {
+            typeCombo.setValue(switch (original.getType()) {
+                case SELL -> "Sell";
+                case LEND -> "Lend";
+                case GIVEAWAY -> "Give Away";
+            });
+            nameField.setText(original.getTitle());
+            catCombo.setValue(original.getCategory());
+            condCombo.setValue(original.getCondition());
+            descArea.setText(original.getDescription());
+            meetupCombo.setValue(original.getMeetupLocation());
+            priceField.setText(java.util.Objects.toString(original.getPrice(), ""));
+            daysField.setText(java.util.Objects.toString(original.getLendingSeconds(), ""));
+            photos.addAll(original.getPhotos());
+            photoNote.setText(photos.size() + " existing photos");
+            submitBtn.setText("Save changes");
+        }
         submitBtn.getStyleClass().add("btn-gold");
         submitBtn.setOnAction(e -> {
             if (typeCombo.getValue() == null || nameField.getText().isBlank() ||
@@ -237,6 +403,10 @@ public class SellerDashboardController {
                     }
                 }
                 default -> listing.setType(ListingType.GIVEAWAY);
+            }
+            if (original != null) {
+                changeListing(original, listing);
+                return;
             }
             if (new Alert(Alert.AlertType.CONFIRMATION, "Submit this listing for administrator review?")
                     .showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
