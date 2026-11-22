@@ -1,6 +1,8 @@
 package com.hkust.marketplace.controllers.buyer;
 
 import com.hkust.marketplace.models.Listing;
+import com.hkust.marketplace.models.ListingStatus;
+import com.hkust.marketplace.models.Deal;
 import com.hkust.marketplace.models.ListingType;
 import com.hkust.marketplace.models.Notification;
 import com.hkust.marketplace.models.User;
@@ -13,9 +15,14 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 
+import java.io.ByteArrayInputStream;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
@@ -55,41 +62,54 @@ public class BuyerDashboardController {
         VBox root = new VBox(16);
         root.setPadding(new Insets(4));
 
-        // Filter bar
-        HBox filterBar = new HBox(12);
-        filterBar.setAlignment(Pos.CENTER_LEFT);
-        ComboBox<String> categoryFilter = new ComboBox<>(FXCollections.observableArrayList("All Categories"));
-        categoryFilter.getItems().addAll(DummyDataService.CATEGORIES);
-        categoryFilter.getSelectionModel().selectFirst();
-        ComboBox<String> typeFilter = new ComboBox<>(FXCollections.observableArrayList("All Types", "Sell", "Lend", "Giveaway"));
-        typeFilter.getSelectionModel().selectFirst();
-        TextField searchField = new TextField();
-        searchField.setPromptText("Search listings...");
-        searchField.setPrefWidth(220);
-        Button searchBtn = new Button("Search");
-        searchBtn.getStyleClass().addAll("btn-primary", "btn-sm");
-        filterBar.getChildren().addAll(
-                new Label("Category:"), categoryFilter,
-                new Label("Type:"), typeFilter,
-                searchField, searchBtn
-        );
-        root.getChildren().add(filterBar);
+        ComboBox<String> category = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.CATEGORIES));
+        category.setPromptText("Any category");
+        ComboBox<ListingType> type = new ComboBox<>(FXCollections.observableArrayList(ListingType.values()));
+        type.setPromptText("Any listing type");
+        ComboBox<String> condition = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.CONDITIONS));
+        condition.setPromptText("Any condition");
+        ComboBox<String> sort = new ComboBox<>(FXCollections.observableArrayList("Newest", "Price: low to high", "Price: high to low"));
+        sort.getSelectionModel().selectFirst();
+        TextField search = new TextField();
+        search.setPromptText("Title or keyword");
+        TextField low = new TextField();
+        low.setPromptText("Min HK$");
+        low.setPrefColumnCount(5);
+        TextField high = new TextField();
+        high.setPromptText("Max HK$");
+        high.setPrefColumnCount(5);
+        Button apply = new Button("Apply");
+        Button reset = new Button("Reset");
+        FlowPane filters = new FlowPane(8, 8, search, category, type, condition, low, high, sort, apply, reset);
 
-        // Listing grid
         FlowPane grid = new FlowPane(16, 16);
         grid.setPrefWrapLength(900);
-
-        List<Listing> live = DummyDataService.getInstance().getLiveListings();
-        if (live.isEmpty()) {
-            Label empty = new Label("No live listings at the moment.");
-            empty.setStyle("-fx-text-fill: #5a5a7a; -fx-font-size: 15px;");
-            root.getChildren().add(empty);
-        } else {
-            for (Listing listing : live) {
-                grid.getChildren().add(createListingCard(listing));
+        Label feedback = new Label();
+        Runnable refresh = () -> {
+            try {
+                var order = DummyDataService.CatalogOrder.values()[sort.getSelectionModel().getSelectedIndex()];
+                var results = DummyDataService.getInstance().browse(search.getText(), category.getValue(), type.getValue(),
+                        condition.getValue(), nullablePrice(low), nullablePrice(high), order);
+                grid.getChildren().setAll(results.stream().map(this::createListingCard).toList());
+                feedback.setText(results.isEmpty() ? "No matching live listings." : "");
+            } catch (IllegalArgumentException | SecurityException failure) {
+                feedback.setText(failure.getMessage());
             }
-            root.getChildren().add(grid);
-        }
+        };
+        apply.setOnAction(event -> refresh.run());
+        search.setOnAction(event -> refresh.run());
+        reset.setOnAction(event -> {
+            category.setValue(null);
+            type.setValue(null);
+            condition.setValue(null);
+            search.clear();
+            low.clear();
+            high.clear();
+            sort.getSelectionModel().selectFirst();
+            refresh.run();
+        });
+        root.getChildren().addAll(filters, feedback, grid);
+        refresh.run();
 
         ScrollPane scroll = new ScrollPane(root);
         scroll.setFitToWidth(true);
@@ -134,69 +154,164 @@ public class BuyerDashboardController {
         Label date = new Label("Posted: " + listing.getPostedAt().format(DateTimeFormatter.ofPattern("dd MMM yyyy")));
         date.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 11px;");
 
-        Button actionBtn = new Button();
-        actionBtn.getStyleClass().addAll("btn-primary", "btn-sm");
-        switch (listing.getType()) {
-            case SELL -> {
-                actionBtn.setText("Make Offer");
-                actionBtn.setOnAction(e -> showOfferDialog(listing));
-            }
-            case LEND -> {
-                actionBtn.setText("Request Borrow");
-                actionBtn.setOnAction(e -> showBorrowDialog(listing));
-            }
-            case GIVEAWAY -> {
-                actionBtn.setText("Claim Item");
-                actionBtn.setOnAction(e -> claimItem(listing));
-            }
+        Button details = new Button("View details");
+        details.getStyleClass().addAll("btn-primary", "btn-sm");
+        details.setOnAction(event -> showListingDetails(listing.getId()));
+        if (!listing.getPhotos().isEmpty()) {
+            addPhoto(card, listing.getPhotos().get(0), 230, 125);
         }
-
-        card.getChildren().addAll(top, title, meta, seller, location, date, actionBtn);
+        card.getChildren().addAll(top, title, meta, seller, location, date,
+                new Label(listing.getStatus().name()), details);
         return card;
     }
 
-    private void showOfferDialog(Listing listing) {
-        TextInputDialog dialog = new TextInputDialog(String.valueOf(listing.getPrice() != null ? listing.getPrice() : 0));
-        dialog.setTitle("Make an Offer");
-        dialog.setHeaderText("Offer for: " + listing.getTitle());
-        dialog.setContentText("Your offer price (HK$):");
-        dialog.showAndWait().ifPresent(priceStr -> {
-            try {
-                double price = Double.parseDouble(priceStr);
-                Alert alert = new Alert(Alert.AlertType.INFORMATION);
-                alert.setTitle("Offer Submitted");
-                alert.setHeaderText(null);
-                alert.setContentText("Your offer of HK$" + price + " has been sent to " + listing.getSellerFullName() + ".\n\n(Demo only – no backend)");
-                alert.showAndWait();
-            } catch (NumberFormatException ex) {
-                new Alert(Alert.AlertType.ERROR, "Invalid price.").showAndWait();
-            }
-        });
+    private static Double nullablePrice(TextField field) {
+        try {
+            return field.getText().isBlank() ? null : Double.valueOf(field.getText());
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException("Enter a numeric price.");
+        }
     }
 
-    private void showBorrowDialog(Listing listing) {
-        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setTitle("Borrow Request");
-        alert.setHeaderText("Request to borrow: " + listing.getTitle());
-        alert.setContentText("Proposed duration: " + (listing.getLendingDays() != null ? listing.getLendingDays() + " days" : "N/A") +
-                "\n\nSend borrow request to seller?");
-        alert.showAndWait().ifPresent(resp -> {
-            if (resp == ButtonType.OK) {
-                new Alert(Alert.AlertType.INFORMATION, "Borrow request sent!\n(Demo only)").showAndWait();
-            }
-        });
+    private static void addPhoto(Pane target, byte[] photo, int width, int height) {
+        Image image = new Image(new ByteArrayInputStream(photo), width, height, true, true);
+        if (!image.isError()) {
+            target.getChildren().add(new ImageView(image));
+        }
     }
 
-    private void claimItem(Listing listing) {
-        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setTitle("Claim Item");
-        alert.setHeaderText("Claim: " + listing.getTitle());
-        alert.setContentText("Are you sure you want to claim this giveaway item?");
-        alert.showAndWait().ifPresent(resp -> {
-            if (resp == ButtonType.OK) {
-                new Alert(Alert.AlertType.INFORMATION, "Item claimed successfully!\n(Demo only)").showAndWait();
+    private void showListingDetails(String listingId) {
+        var service = DummyDataService.getInstance();
+        try {
+            Listing listing = service.openBuyerListing(listingId);
+            Dialog<Void> dialog = new Dialog<>();
+            dialog.setTitle(listing.getTitle());
+            dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+            VBox body = new VBox(10);
+            FlowPane photos = new FlowPane(8, 8);
+            for (byte[] photo : listing.getPhotos()) {
+                addPhoto(photos, photo, 200, 150);
             }
-        });
+            var reviews = service.getReviewsForSeller(listing.getSellerUsername());
+            String average = reviews.stream().mapToInt(review -> review.getRating()).average().stream()
+                    .mapToObj(value -> String.format("%.1f / 5", value)).findFirst().orElse("No ratings");
+            Label description = new Label(listing.getDescription());
+            description.setWrapText(true);
+            String terms = listing.getType() == ListingType.LEND
+                    ? listing.getLendingSeconds() + " seconds" : listing.getPriceDisplay();
+            body.getChildren().addAll(photos, description,
+                    new Label(listing.getCategory() + " / " + listing.getCondition() + " / " + listing.getTypeDisplay()),
+                    new Label(listing.getMeetupLocation() + " / Posted " + listing.getPostedAt().toLocalDate()),
+                    new Label("Availability: " + listing.getStatus() + " / " + terms),
+                    new Label(listing.getSellerFullName() + " / " + average));
+            for (var review : reviews) {
+                Label entry = new Label(review.getRating() + "/5 " + java.util.Objects.toString(review.getComment(), ""));
+                entry.setWrapText(true);
+                body.getChildren().add(entry);
+            }
+            Button chat = new Button("Chat");
+            chat.setOnAction(event -> showBuyerChat(listing));
+            Button report = new Button("Report listing");
+            report.setOnAction(event -> new TextInputDialog().showAndWait().ifPresent(reason ->
+                    tryAction(() -> service.reportListing(listingId, reason), "Report received.")));
+            HBox actions = new HBox(8, chat, report);
+            if (listing.getStatus() == ListingStatus.LIVE) {
+                Button action = new Button(switch (listing.getType()) {
+                    case SELL -> "Make offer";
+                    case LEND -> "Request borrowing";
+                    case GIVEAWAY -> "Claim item";
+                });
+                action.setOnAction(event -> makeProposal(listing, false));
+                actions.getChildren().add(action);
+            }
+            body.getChildren().add(actions);
+            ScrollPane scroll = new ScrollPane(body);
+            scroll.setFitToWidth(true);
+            scroll.setPrefViewportWidth(630);
+            scroll.setPrefViewportHeight(430);
+            dialog.getDialogPane().setContent(scroll);
+            dialog.showAndWait();
+        } catch (IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
+    }
+
+    private void showBuyerChat(Listing listing) {
+        var service = DummyDataService.getInstance();
+        Dialog<Void> chat = new Dialog<>();
+        chat.setTitle("Chat about " + listing.getTitle());
+        chat.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+        TextField search = new TextField();
+        search.setPromptText("Search conversation");
+        ListView<String> history = new ListView<>();
+        history.setPrefSize(550, 260);
+        history.setPlaceholder(new Label("No matching messages."));
+        TextField compose = new TextField();
+        compose.setPromptText("Write a message");
+        Runnable reload = () -> history.getItems().setAll(service.buyerChat(listing.getId(), search.getText()).stream()
+                .map(m -> m.sentAt() + "  @" + m.sender() + ": " + m.text()).toList());
+        search.textProperty().addListener((property, before, after) -> reload.run());
+        Button send = new Button("Send");
+        send.setOnAction(event -> tryAction(() -> {
+            service.sendBuyerMessage(listing.getId(), compose.getText());
+            compose.clear();
+            reload.run();
+        }, null));
+        HBox actions = new HBox(8, compose, send);
+        if (listing.getType() != ListingType.GIVEAWAY && listing.getStatus() == ListingStatus.LIVE) {
+            Button offer = new Button("Make formal offer");
+            offer.setOnAction(event -> {
+                makeProposal(listing, true);
+                reload.run();
+            });
+            actions.getChildren().add(offer);
+        }
+        reload.run();
+        chat.getDialogPane().setContent(new VBox(10, search, history, actions));
+        chat.showAndWait();
+    }
+
+    private void makeProposal(Listing listing, boolean fromChat) {
+        var service = DummyDataService.getInstance();
+        switch (listing.getType()) {
+            case SELL -> {
+                TextInputDialog offer = new TextInputDialog(String.valueOf(listing.getPrice()));
+                offer.setTitle("Make offer");
+                offer.setHeaderText("Offer price in HK$");
+                offer.showAndWait().ifPresent(price -> tryAction(() -> service.submitBuyerProposal(
+                        listing.getId(), Double.valueOf(price.strip()), null, null, fromChat), "Offer sent."));
+            }
+            case LEND -> {
+                Dialog<ButtonType> request = new Dialog<>();
+                request.setTitle("Propose borrowing period");
+                request.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+                var now = LocalDateTime.now(ZoneId.of("Asia/Hong_Kong")).withNano(0);
+                TextField start = new TextField(now.toString());
+                TextField end = new TextField(now.plusSeconds(listing.getLendingSeconds()).toString());
+                request.getDialogPane().setContent(new VBox(8, new Label("Hong Kong time, e.g. 2026-11-22T16:00:00"),
+                        new Label("Start"), start, new Label("End"), end));
+                if (request.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+                    tryAction(() -> service.submitBuyerProposal(listing.getId(), null,
+                            LocalDateTime.parse(start.getText().strip()), LocalDateTime.parse(end.getText().strip()),
+                            fromChat), "Borrowing request sent.");
+                }
+            }
+            case GIVEAWAY -> tryAction(() -> service.submitBuyerProposal(listing.getId(), null, null, null, false),
+                    "Claim recorded. The seller will review it.");
+        }
+    }
+
+    private static void tryAction(Runnable operation, String success) {
+        try {
+            operation.run();
+            if (success != null) {
+                new Alert(Alert.AlertType.INFORMATION, success).showAndWait();
+            }
+        } catch (java.time.format.DateTimeParseException failure) {
+            new Alert(Alert.AlertType.ERROR, "Use the date and time format shown.").showAndWait();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
     }
 
     @FXML
@@ -227,16 +342,16 @@ public class BuyerDashboardController {
 
         table.getColumns().addAll(colTitle, colSeller, colType, colStatus, colAction);
 
-        // Dummy rows
-        table.setItems(FXCollections.observableArrayList(
-                new String[]{"Calculus Textbook (Stewart)", "Charlie Lee", "Buy", "Accepted", "Chat / Complete"},
-                new String[]{"Graphing Calculator TI-84", "Diana Ng", "Borrow", "Pending", "View"}
-        ));
-
-        root.getChildren().add(table);
-        Label note = new Label("💡 Self-return for borrowed items and mark-complete are available here in the full version.");
-        note.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 12px;");
-        root.getChildren().add(note);
+        var user = SessionManager.getCurrentUser();
+        List<Deal> deals = DummyDataService.getInstance().getDealsForBuyer(user.getUsername());
+        table.setItems(FXCollections.observableArrayList(deals.stream().map(deal -> new String[]{
+                deal.getListingTitle(), deal.getSellerUsername(), deal.getDealType().name(),
+                deal.getStatus(), deal.terms()
+        }).toList()));
+        Button details = new Button("View selected listing");
+        details.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        details.setOnAction(event -> showListingDetails(deals.get(table.getSelectionModel().getSelectedIndex()).getListingId()));
+        root.getChildren().addAll(table, details);
 
         contentPane.getChildren().add(root);
     }

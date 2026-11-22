@@ -1,39 +1,44 @@
 package com.hkust.marketplace.utils;
 
 import com.hkust.marketplace.models.User;
+import com.hkust.marketplace.models.UserRole;
 
 /**
- * Simple session holder for the currently logged-in user.
- * TODO: Replace with proper JWT / session token handling when backend is added.
+ * Holds the authenticated actor for the desktop UI or the current service call thread.
  */
 public class SessionManager {
-    private static User currentUser;
+    private static final ThreadLocal<User> CURRENT = new ThreadLocal<>();
 
     public static void login(User user) {
-        currentUser = user;
+        CURRENT.set(user);
     }
 
     public static void logout() {
-        currentUser = null;
+        CURRENT.remove();
     }
 
     public static User getCurrentUser() {
-        return currentUser;
+        return CURRENT.get();
     }
 
     public static boolean isLoggedIn() {
-        return currentUser != null;
+        return getCurrentUser() != null;
     }
 
     public static boolean isBuyer() {
-        return currentUser != null && currentUser.getRole() == com.hkust.marketplace.models.UserRole.BUYER;
+        return isRole(UserRole.BUYER);
     }
 
     public static boolean isSeller() {
-        return currentUser != null && currentUser.getRole() == com.hkust.marketplace.models.UserRole.SELLER;
+        return isRole(UserRole.SELLER);
     }
 
     public static boolean isAdmin() {
-        return currentUser != null && currentUser.getRole() == com.hkust.marketplace.models.UserRole.ADMIN;
+        return isRole(UserRole.ADMIN);
+    }
+
+    private static boolean isRole(UserRole role) {
+        User actor = getCurrentUser();
+        return actor != null && actor.getRole() == role;
     }
 }

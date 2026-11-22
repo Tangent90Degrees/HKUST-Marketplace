@@ -10,6 +10,8 @@ import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.Duration;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -30,6 +32,9 @@ public class DummyDataService {
     private final List<Deal> deals = new ArrayList<>();
     private final List<Notification> notifications = new ArrayList<>();
     private final List<Review> reviews = new ArrayList<>();
+    private final List<ChatMessage> messages = new ArrayList<>();
+    private final List<ListingReport> reports = new ArrayList<>();
+    private static final ZoneId HONG_KONG = ZoneId.of("Asia/Hong_Kong");
     private MarketplaceStorage storage;
 
     private final AtomicInteger listingIdCounter = new AtomicInteger(100);
@@ -95,6 +100,14 @@ public class DummyDataService {
                 notifications.addAll(saved.notifications());
                 reviews.clear();
                 reviews.addAll(saved.reviews());
+                messages.clear();
+                reports.clear();
+                if (saved.messages() != null) {
+                    messages.addAll(saved.messages());
+                }
+                if (saved.reports() != null) {
+                    reports.addAll(saved.reports());
+                }
                 listingIdCounter.set(saved.nextListing());
                 dealIdCounter.set(saved.nextDeal());
                 notifIdCounter.set(saved.nextNotification());
@@ -107,7 +120,7 @@ public class DummyDataService {
     }
 
     private MarketplaceStorage.Snapshot snapshot() {
-        return new MarketplaceStorage.Snapshot(users, listings, deals, notifications, reviews,
+        return new MarketplaceStorage.Snapshot(users, listings, deals, notifications, reviews, messages, reports,
                 listingIdCounter.get(), dealIdCounter.get(), notifIdCounter.get(), reviewIdCounter.get());
     }
 
@@ -462,6 +475,161 @@ public class DummyDataService {
 
     public Listing findListing(String id) {
         return listings.get(id);
+    }
+
+    public enum CatalogOrder { NEWEST, PRICE_LOW, PRICE_HIGH }
+
+    /** Searches approved live listings. A price bound limits results to sale listings. */
+    public synchronized List<Listing> browse(String keyword, String category, ListingType type, String condition,
+                                            Double low, Double high, CatalogOrder order) {
+        requireActor(UserRole.BUYER);
+        if ((low != null && (!Double.isFinite(low) || low < 0))
+                || (high != null && (!Double.isFinite(high) || high < 0))
+                || (low != null && high != null && low > high)) {
+            throw new IllegalArgumentException("Enter a valid price range.");
+        }
+        Comparator<Double> ascending = Comparator.naturalOrder();
+        Comparator<Listing> sorting = switch (order) {
+            case NEWEST -> Comparator.comparing(Listing::getPostedAt).reversed();
+            case PRICE_LOW -> Comparator.comparing(Listing::getPrice, Comparator.nullsLast(ascending));
+            case PRICE_HIGH -> Comparator.comparing(Listing::getPrice, Comparator.nullsLast(ascending.reversed()));
+        };
+        String query = keyword == null ? "" : keyword.strip().toLowerCase(Locale.ROOT);
+        return getLiveListings().stream()
+                .filter(l -> (l.getTitle() + " " + l.getDescription()).toLowerCase(Locale.ROOT).contains(query))
+                .filter(l -> category == null || category.equals(l.getCategory()))
+                .filter(l -> condition == null || condition.equals(l.getCondition()))
+                .filter(l -> type == null || type == l.getType())
+                .filter(l -> low == null || (l.getPrice() != null && l.getPrice() >= low))
+                .filter(l -> high == null || (l.getPrice() != null && l.getPrice() <= high))
+                .sorted(sorting)
+                .toList();
+    }
+
+    /** Opens a catalog or previously involved listing and counts the detail view. */
+    public synchronized Listing openBuyerListing(String listingId) {
+        User buyer = requireActor(UserRole.BUYER);
+        Listing listing = buyerListing(listingId, buyer.getUsername());
+        int before = listing.getViewCount();
+        listing.setViewCount(before + 1);
+        saveChanges(() -> listing.setViewCount(before));
+        return listing;
+    }
+
+    private Listing buyerListing(String id, String buyer) {
+        Listing listing = findListing(id);
+        if (listing == null || (listing.getStatus() != ListingStatus.LIVE && deals.stream()
+                .noneMatch(d -> id.equals(d.getListingId()) && buyer.equals(d.getBuyerUsername())))) {
+            throw new IllegalStateException("This listing is unavailable.");
+        }
+        return listing;
+    }
+
+    /** Saves a buyer proposal and the associated notice and optional chat message atomically. */
+    public synchronized Deal submitBuyerProposal(String listingId, Double price, LocalDateTime start,
+                                                 LocalDateTime end, boolean fromChat) {
+        User buyer = requireActor(UserRole.BUYER);
+        Listing listing = buyerListing(listingId, buyer.getUsername());
+        if (listing.getStatus() != ListingStatus.LIVE) {
+            throw new IllegalStateException("This listing is no longer available.");
+        }
+        validateTerms(listing.getType(), price, start, end);
+        if (listing.getType() == ListingType.GIVEAWAY && (fromChat || deals.stream().anyMatch(
+                d -> listingId.equals(d.getListingId()) && "Pending".equals(d.getStatus())))) {
+            throw new IllegalStateException("This giveaway cannot accept another claim.");
+        }
+        Deal deal = new Deal();
+        deal.setId("D" + dealIdCounter.getAndIncrement());
+        deal.setListingId(listingId);
+        deal.setListingTitle(listing.getTitle());
+        deal.setBuyerUsername(buyer.getUsername());
+        deal.setSellerUsername(listing.getSellerUsername());
+        deal.setDealType(listing.getType());
+        deal.setOfferPrice(price);
+        deal.setRequestedPeriod(start, end);
+        deals.add(deal);
+        Notification notice = createNotice(listing.getSellerUsername(), "New " + listing.getTypeDisplay() + " proposal",
+                buyer.getFullName() + " proposed " + deal.terms() + " for " + listing.getTitle() + ".", "Offer");
+        ChatMessage message = new ChatMessage(listingId, buyer.getUsername(), listing.getSellerUsername(),
+                buyer.getUsername(), "Proposal: " + deal.terms(), deal.getId(), LocalDateTime.now(HONG_KONG));
+        if (fromChat) {
+            messages.add(message);
+        }
+        saveChanges(() -> {
+            deals.remove(deal);
+            notifications.remove(notice);
+            if (fromChat) {
+                messages.remove(message);
+            }
+        });
+        return deal;
+    }
+
+    private static void validateTerms(ListingType type, Double price, LocalDateTime start, LocalDateTime end) {
+        if (type == ListingType.SELL && (price == null || !Double.isFinite(price) || price < 0)) {
+            throw new IllegalArgumentException("Enter a valid nonnegative offer price.");
+        }
+        if (type == ListingType.LEND && (start == null || end == null || Duration.between(start, end).getSeconds() < 5)) {
+            throw new IllegalArgumentException("Borrowing must last at least five seconds.");
+        }
+    }
+
+    private Notification createNotice(String recipient, String title, String message, String category) {
+        Notification notice = new Notification(recipient, title, message, category);
+        notice.setId("N" + notifIdCounter.getAndIncrement());
+        notifications.add(notice);
+        return notice;
+    }
+
+    /** Searches the current buyer's retained thread for one listing. */
+    public synchronized List<ChatMessage> buyerChat(String listingId, String query) {
+        User buyer = requireActor(UserRole.BUYER);
+        Listing listing = buyerListing(listingId, buyer.getUsername());
+        return searchChat(listingId, buyer.getUsername(), listing.getSellerUsername(), query);
+    }
+
+    private List<ChatMessage> searchChat(String listingId, String buyer, String seller, String query) {
+        String keyword = query == null ? "" : query.strip().toLowerCase(Locale.ROOT);
+        return messages.stream().filter(m -> m.listingId().equals(listingId) && m.buyer().equals(buyer)
+                        && m.seller().equals(seller) && m.text().toLowerCase(Locale.ROOT).contains(keyword))
+                .toList();
+    }
+
+    /** Adds a text message to the buyer's private thread. */
+    public synchronized void sendBuyerMessage(String listingId, String text) {
+        User buyer = requireActor(UserRole.BUYER);
+        Listing listing = buyerListing(listingId, buyer.getUsername());
+        addTextMessage(listing, buyer.getUsername(), buyer.getUsername(), listing.getSellerUsername(), text);
+    }
+
+    private void addTextMessage(Listing listing, String buyer, String sender, String recipient, String text) {
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("Enter a message.");
+        }
+        ChatMessage message = new ChatMessage(listing.getId(), buyer, listing.getSellerUsername(), sender,
+                text.strip(), null, LocalDateTime.now(HONG_KONG));
+        messages.add(message);
+        Notification notice = createNotice(recipient, "New chat message", "New message about " + listing.getTitle(), "Chat");
+        saveChanges(() -> {
+            messages.remove(message);
+            notifications.remove(notice);
+        });
+    }
+
+    /** Saves a report and alerts the administrator. The listing state is unaffected. */
+    public synchronized void reportListing(String listingId, String reason) {
+        User buyer = requireActor(UserRole.BUYER);
+        Listing listing = buyerListing(listingId, buyer.getUsername());
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("Enter the report details.");
+        }
+        ListingReport report = new ListingReport(listingId, buyer.getUsername(), reason.strip(), LocalDateTime.now(HONG_KONG));
+        reports.add(report);
+        Notification notice = createNotice("admin", "Listing Reported", listing.getTitle() + ": " + report.reason(), "Report");
+        saveChanges(() -> {
+            reports.remove(report);
+            notifications.remove(notice);
+        });
     }
 
     /** Records a pending listing decision and its seller notification as one write. */

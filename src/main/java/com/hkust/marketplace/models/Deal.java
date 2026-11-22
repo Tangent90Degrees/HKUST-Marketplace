@@ -16,6 +16,8 @@ public class Deal implements java.io.Serializable {
     private Double offerPrice;
     private LocalDate borrowStart;
     private LocalDate borrowEnd;
+    private LocalDateTime requestedStart;
+    private LocalDateTime requestedEnd;
     private LocalDateTime createdAt;
     private LocalDateTime completedAt;
     private boolean rated;
@@ -56,6 +58,27 @@ public class Deal implements java.io.Serializable {
 
     public LocalDate getBorrowEnd() { return borrowEnd; }
     public void setBorrowEnd(LocalDate borrowEnd) { this.borrowEnd = borrowEnd; }
+
+    public LocalDateTime getRequestedStart() {
+        return requestedStart != null || borrowStart == null ? requestedStart : borrowStart.atStartOfDay();
+    }
+    public LocalDateTime getRequestedEnd() {
+        return requestedEnd != null || borrowEnd == null ? requestedEnd : borrowEnd.atStartOfDay();
+    }
+    public void setRequestedPeriod(LocalDateTime start, LocalDateTime end) {
+        requestedStart = start;
+        requestedEnd = end;
+        borrowStart = start == null ? null : start.toLocalDate();
+        borrowEnd = end == null ? null : end.toLocalDate();
+    }
+
+    public String terms() {
+        return switch (dealType) {
+            case SELL -> "HK$ " + offerPrice;
+            case LEND -> getRequestedStart() + " to " + getRequestedEnd();
+            case GIVEAWAY -> "Giveaway claim";
+        };
+    }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

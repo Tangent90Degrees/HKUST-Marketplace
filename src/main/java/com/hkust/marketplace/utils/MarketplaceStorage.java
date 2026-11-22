@@ -10,6 +10,7 @@ import java.util.Map;
 final class MarketplaceStorage {
     record Snapshot(Map<String, User> users, Map<String, Listing> listings, List<Deal> deals,
                     List<Notification> notifications, List<Review> reviews,
+                    List<ChatMessage> messages, List<ListingReport> reports,
                     int nextListing, int nextDeal, int nextNotification, int nextReview) implements Serializable {}
 
     private final Path file;
