@@ -3,6 +3,7 @@ package com.hkust.marketplace.controllers.seller;
 import com.hkust.marketplace.models.*;
 import com.hkust.marketplace.utils.DummyDataService;
 import com.hkust.marketplace.utils.SceneManager;
+import com.hkust.marketplace.utils.NotificationBoard;
 import com.hkust.marketplace.utils.SessionManager;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
@@ -451,40 +452,43 @@ public class SellerDashboardController {
         List<Listing> myListings = DummyDataService.getInstance()
                 .getListingsBySeller(user != null ? user.getUsername() : "");
 
-        // Metric cards
-        HBox metrics = new HBox(16);
-        metrics.getChildren().addAll(
-                metricCard("Listings", String.valueOf(myListings.size()), "#003974"),
-                metricCard("Avg Rating", String.format("%.1f", user != null ? user.getAverageRating() : 0), "#A68137"),
-                metricCard("Reviews", String.valueOf(user != null ? user.getRatingCount() : 0), "#2e7d32"),
-                metricCard("Views (demo)", "128", "#1565c0")
-        );
+        var service = DummyDataService.getInstance();
+        var proposals = service.sellerProposals();
+        int views = myListings.stream().mapToInt(Listing::getViewCount).sum();
+        long completed = proposals.stream().filter(Deal::isCompleted).count();
+        var average = service.getReviewsForSeller(user.getUsername()).stream().mapToInt(Review::getRating).average();
+        HBox metrics = new HBox(16,
+                metricCard("Views", Integer.toString(views), "#003974"),
+                metricCard("Offers received", Long.toString(proposals.stream().filter(Deal::isBuyerSubmitted).count()), "#1565c0"),
+                metricCard("Completed deals", Long.toString(completed), "#2e7d32"),
+                metricCard("Average rating", average.isPresent() ? String.format("%.1f", average.getAsDouble()) : "No ratings", "#A68137"));
         root.getChildren().add(metrics);
 
-        // Bar chart
-        CategoryAxis xAxis = new CategoryAxis();
-        NumberAxis yAxis = new NumberAxis();
-        BarChart<String, Number> barChart = new BarChart<>(xAxis, yAxis);
-        barChart.setTitle("Listings by Category (demo data)");
-        barChart.setLegendVisible(false);
-        barChart.setPrefHeight(280);
-        XYChart.Series<String, Number> series = new XYChart.Series<>();
-        series.getData().add(new XYChart.Data<>("Textbooks", 3));
-        series.getData().add(new XYChart.Data<>("Electronics", 5));
-        series.getData().add(new XYChart.Data<>("Furniture", 2));
-        series.getData().add(new XYChart.Data<>("Others", 1));
-        barChart.getData().add(series);
+        if (myListings.isEmpty()) {
+            root.getChildren().add(new Label("No listing activity to chart."));
+        } else {
+            BarChart<String, Number> bars = new BarChart<>(new CategoryAxis(), new NumberAxis());
+            bars.setTitle("Listing views by type");
+            bars.setLegendVisible(false);
+            bars.setPrefHeight(280);
+            XYChart.Series<String, Number> series = new XYChart.Series<>();
+            for (ListingType type : ListingType.values()) {
+                int count = myListings.stream().filter(l -> l.getType() == type).mapToInt(Listing::getViewCount).sum();
+                series.getData().add(new XYChart.Data<>(type.name(), count));
+            }
+            bars.getData().add(series);
 
-        // Pie chart
-        PieChart pie = new PieChart();
-        pie.setTitle("Listing Status Distribution");
-        pie.setPrefHeight(280);
-        pie.getData().add(new PieChart.Data("Live", 4));
-        pie.getData().add(new PieChart.Data("Pending", 1));
-        pie.getData().add(new PieChart.Data("Sold", 2));
-
-        HBox charts = new HBox(20, barChart, pie);
-        root.getChildren().add(charts);
+            PieChart pie = new PieChart();
+            pie.setTitle("Listings by status");
+            pie.setPrefHeight(280);
+            for (ListingStatus status : ListingStatus.values()) {
+                long count = myListings.stream().filter(l -> l.getStatus() == status).count();
+                if (count > 0) {
+                    pie.getData().add(new PieChart.Data(status.name().replace('_', ' '), count));
+                }
+            }
+            root.getChildren().add(new HBox(20, bars, pie));
+        }
 
         ScrollPane scroll = new ScrollPane(root);
         scroll.setFitToWidth(true);
@@ -513,9 +517,8 @@ public class SellerDashboardController {
         VBox root = new VBox(12);
         root.setPadding(new Insets(4));
 
-        User user = SessionManager.getCurrentUser();
-        List<Review> reviews = DummyDataService.getInstance()
-                .getReviewsForSeller(user != null ? user.getUsername() : "");
+        var service = DummyDataService.getInstance();
+        List<Review> reviews = service.sellerReviews();
 
         if (reviews.isEmpty()) {
             root.getChildren().add(new Label("No reviews yet."));
@@ -528,50 +531,53 @@ public class SellerDashboardController {
                 Label comment = new Label(r.getComment());
                 comment.setWrapText(true);
                 Label meta = new Label("by @" + r.getBuyerUsername() + " · " + r.getListingTitle());
+                meta.setText(meta.getText() + " / " + r.getCreatedAt().toLocalDate()
+                        + (r.isHidden() ? " / hidden" : "") + (r.isFlagged() ? " / flagged" : ""));
                 meta.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 12px;");
                 HBox actions = new HBox(8);
                 Button reply = new Button("Reply");
                 reply.getStyleClass().addAll("btn-outline", "btn-sm");
-                reply.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION, "Reply sent to buyer (demo).").showAndWait());
+                reply.setDisable(r.isHidden());
+                reply.setOnAction(event -> {
+                    TextInputDialog prompt = new TextInputDialog();
+                    prompt.setTitle("Reply to review");
+                    prompt.showAndWait().ifPresent(value -> updateFeedback(() -> service.replyToReview(r.getId(), value)));
+                });
                 Button flag = new Button("Flag");
                 flag.getStyleClass().addAll("btn-danger", "btn-sm");
-                flag.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION, "Review flagged for admin (demo).").showAndWait());
+                flag.setDisable(r.isHidden() || r.isFlagged());
+                flag.setOnAction(event -> {
+                    if (new Alert(Alert.AlertType.CONFIRMATION, "Flag this review for moderation?")
+                            .showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+                        updateFeedback(() -> service.flagReview(r.getId()));
+                    }
+                });
                 actions.getChildren().addAll(reply, flag);
-                item.getChildren().addAll(stars, comment, meta, actions);
+                item.getChildren().addAll(stars, comment, meta);
+                if (r.getSellerReply() != null) {
+                    item.getChildren().add(new Label("Your reply: " + r.getSellerReply()));
+                }
+                item.getChildren().add(actions);
                 root.getChildren().add(item);
             }
         }
         contentPane.getChildren().add(new ScrollPane(root));
     }
 
+    private void updateFeedback(Runnable action) {
+        try {
+            action.run();
+            new Alert(Alert.AlertType.INFORMATION, "Feedback updated.").showAndWait();
+            showReviews();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
+        }
+    }
+
     @FXML
     private void showNotifications() {
         setActive(btnNotifications, "Notifications");
-        contentPane.getChildren().clear();
-        VBox root = new VBox(12);
-        root.setPadding(new Insets(4));
-        User user = SessionManager.getCurrentUser();
-        List<Notification> notifs = DummyDataService.getInstance()
-                .getNotificationsFor(user != null ? user.getUsername() : "");
-        if (notifs.isEmpty()) {
-            root.getChildren().add(new Label("No notifications."));
-        } else {
-            for (Notification n : notifs) {
-                VBox item = new VBox(4);
-                item.getStyleClass().add("notif-item");
-                Label t = new Label(n.getTitle());
-                t.setStyle("-fx-font-weight: bold;");
-                Label m = new Label(n.getMessage());
-                m.setWrapText(true);
-                m.setStyle("-fx-text-fill: #5a5a7a; -fx-font-size: 13px;");
-                Label meta = new Label(n.getCategory() + " · " +
-                        n.getTimestamp().format(DateTimeFormatter.ofPattern("dd MMM HH:mm")));
-                meta.setStyle("-fx-text-fill: #9aa0b0; -fx-font-size: 11px;");
-                item.getChildren().addAll(t, m, meta);
-                root.getChildren().add(item);
-            }
-        }
-        contentPane.getChildren().add(new ScrollPane(root));
+        contentPane.getChildren().setAll(NotificationBoard.current(this::showNotifications));
     }
 
     @FXML

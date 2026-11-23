@@ -23,6 +23,7 @@ public class Deal implements java.io.Serializable {
     private boolean rated;
     private boolean dueReminderSent;
     private LocalDateTime startedAt;
+    private boolean sellerInitiated;
 
     public Deal() {
         this.createdAt = LocalDateTime.now();
@@ -95,6 +96,8 @@ public class Deal implements java.io.Serializable {
     public LocalDateTime getStartedAt() { return dealType == ListingType.LEND ? getRequestedStart() : startedAt; }
     public void setStartedAt(LocalDateTime startedAt) { this.startedAt = startedAt; }
     public boolean isCompleted() { return "Completed".equals(status) || "Returned".equals(status); }
+    public boolean isBuyerSubmitted() { return !sellerInitiated; }
+    public void setSellerInitiated(boolean initiated) { sellerInitiated = initiated; }
     public String displayType() {
         return switch (dealType) {
             case SELL -> "Bought";

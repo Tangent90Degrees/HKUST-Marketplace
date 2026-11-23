@@ -14,6 +14,7 @@ public class Review implements java.io.Serializable {
     private String comment;
     private String sellerReply;
     private boolean hidden; // admin can hide
+    private boolean flagged;
     private LocalDateTime createdAt;
 
     public Review() {
@@ -47,6 +48,8 @@ public class Review implements java.io.Serializable {
 
     public boolean isHidden() { return hidden; }
     public void setHidden(boolean hidden) { this.hidden = hidden; }
+    public boolean isFlagged() { return flagged; }
+    public void setFlagged(boolean flagged) { this.flagged = flagged; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

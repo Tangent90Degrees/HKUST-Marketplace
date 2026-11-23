@@ -12,6 +12,10 @@ public class Notification implements java.io.Serializable {
     private String category; // Offer, Chat, System, Rating, etc.
     private LocalDateTime timestamp;
     private boolean read;
+    private Reference reference;
+    private String recordId;
+
+    public enum Reference { LISTING, DEAL, REVIEW, REPORT, ACCOUNT }
 
     public Notification() {
         this.timestamp = LocalDateTime.now();
@@ -47,4 +51,12 @@ public class Notification implements java.io.Serializable {
 
     public boolean isRead() { return read; }
     public void setRead(boolean read) { this.read = read; }
+    public Reference getReference() { return reference; }
+    public String getRecordId() { return recordId; }
+
+    public Notification link(Reference reference, String id) {
+        this.reference = reference;
+        this.recordId = id;
+        return this;
+    }
 }

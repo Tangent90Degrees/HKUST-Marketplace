@@ -1,6 +1,7 @@
 package com.hkust.marketplace.utils;
 
 import com.hkust.marketplace.models.*;
+import com.hkust.marketplace.models.Notification.Reference;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -112,6 +113,8 @@ public class DummyDataService {
                 dealIdCounter.set(saved.nextDeal());
                 notifIdCounter.set(saved.nextNotification());
                 reviewIdCounter.set(saved.nextReview());
+                notifications.stream().filter(notice -> notice.getId() == null)
+                        .forEach(notice -> notice.setId("N" + notifIdCounter.getAndIncrement()));
             }
             storage = candidate;
         } catch (IOException e) {
@@ -268,7 +271,8 @@ public class DummyDataService {
         notifications.add(new Notification("diana", "Listing Pending",
                 "Your Mini Fridge listing is awaiting admin review.", "System"));
         notifications.add(new Notification("admin", "New Listing Submitted",
-                "Diana submitted 'Mini Fridge' for review.", "System"));
+                "Diana submitted 'Mini Fridge' for review.", "System").link(Reference.LISTING, l5.getId()));
+        notifications.forEach(notice -> notice.setId("N" + notifIdCounter.getAndIncrement()));
 
         // Sample review
         Review r1 = new Review();
@@ -552,7 +556,8 @@ public class DummyDataService {
         deal.setRequestedPeriod(start, end);
         deals.add(deal);
         Notification notice = createNotice(listing.getSellerUsername(), "New " + listing.getTypeDisplay() + " proposal",
-                buyer.getFullName() + " proposed " + deal.terms() + " for " + listing.getTitle() + ".", "Offer");
+                buyer.getFullName() + " proposed " + deal.terms() + " for " + listing.getTitle() + ".", "Offer")
+                .link(Reference.DEAL, deal.getId());
         ChatMessage message = new ChatMessage(listingId, buyer.getUsername(), listing.getSellerUsername(),
                 buyer.getUsername(), "Proposal: " + deal.terms(), deal.getId(), LocalDateTime.now(HONG_KONG));
         if (fromChat) {
@@ -737,6 +742,7 @@ public class DummyDataService {
         proposal.setSellerUsername(seller.getUsername());
         proposal.setDealType(listing.getType());
         proposal.setStatus("Countered");
+        proposal.setSellerInitiated(true);
         proposal.setOfferPrice(price);
         proposal.setRequestedPeriod(start, end);
         deals.add(proposal);
@@ -818,7 +824,8 @@ public class DummyDataService {
         draft.setCreatedByAdmin(admin.getUsername());
         draft.setStatus(ListingStatus.LIVE);
         listings.put(draft.getId(), draft);
-        Notification notice = createNotice(seller.getUsername(), "Listing published by administrator", draft.getTitle(), "Listing");
+        Notification notice = createNotice(seller.getUsername(), "Listing published by administrator", draft.getTitle(), "Listing")
+                .link(Reference.LISTING, draft.getId());
         saveChanges(() -> {
             listings.remove(draft.getId());
             notifications.remove(notice);
@@ -972,6 +979,7 @@ public class DummyDataService {
             user.setResidenceHall(residence);
         }
         Notification notice = createNotice("admin", "Account Edited", "@" + old + " → @" + next, "Audit");
+        notice.link(Reference.ACCOUNT, next);
         saveChanges(() -> {
             notifications.remove(notice);
             renameUser(user, next, old, priorName);
@@ -998,7 +1006,12 @@ public class DummyDataService {
             r.setBuyerUsername(renamed(r.getBuyerUsername(), before, after));
             r.setSellerUsername(renamed(r.getSellerUsername(), before, after));
         });
-        notifications.forEach(n -> n.setUsername(renamed(n.getUsername(), before, after)));
+        notifications.forEach(n -> {
+            n.setUsername(renamed(n.getUsername(), before, after));
+            if (n.getReference() == Reference.ACCOUNT && before.equals(n.getRecordId())) {
+                n.link(Reference.ACCOUNT, after);
+            }
+        });
         messages.replaceAll(m -> new ChatMessage(m.listingId(), renamed(m.buyer(), before, after),
                 renamed(m.seller(), before, after), renamed(m.sender(), before, after), m.text(), m.proposalId(), m.sentAt()));
         reports.replaceAll(r -> new ListingReport(r.listingId(), renamed(r.buyer(), before, after), r.reason(), r.filedAt()));
@@ -1016,6 +1029,7 @@ public class DummyDataService {
                 text.strip(), null, LocalDateTime.now(HONG_KONG));
         messages.add(message);
         Notification notice = createNotice(recipient, "New chat message", "New message about " + listing.getTitle(), "Chat");
+        notice.link(Reference.LISTING, listing.getId());
         saveChanges(() -> {
             messages.remove(message);
             notifications.remove(notice);
@@ -1032,6 +1046,7 @@ public class DummyDataService {
         ListingReport report = new ListingReport(listingId, buyer.getUsername(), reason.strip(), LocalDateTime.now(HONG_KONG));
         reports.add(report);
         Notification notice = createNotice("admin", "Listing Reported", listing.getTitle() + ": " + report.reason(), "Report");
+        notice.link(Reference.REPORT, listingId);
         saveChanges(() -> {
             reports.remove(report);
             notifications.remove(notice);
@@ -1061,6 +1076,7 @@ public class DummyDataService {
         String message = approve ? "Your listing '" + listing.getTitle() + "' is now live."
                 : "Your listing '" + listing.getTitle() + "' was rejected. Reason: " + reason.strip();
         Notification notice = new Notification(listing.getSellerUsername(), title, message, "Listing");
+        notice.link(Reference.LISTING, listing.getId());
         notice.setId("N" + notifIdCounter.getAndIncrement());
         notifications.add(notice);
         saveChanges(() -> {
@@ -1085,6 +1101,7 @@ public class DummyDataService {
         listings.put(draft.getId(), draft);
         Notification notice = new Notification("admin", "New Listing Submitted",
                 seller.getFullName() + " submitted '" + draft.getTitle() + "' for review.", "Listing");
+        notice.link(Reference.LISTING, draft.getId());
         notice.setId("N" + notifIdCounter.getAndIncrement());
         notifications.add(notice);
         saveChanges(() -> {
@@ -1177,7 +1194,7 @@ public class DummyDataService {
             });
         }
         Notification notice = returnLoan ? null : createNotice(deal.getSellerUsername(), "Deal completed",
-                deal.getListingTitle() + " was marked complete by the buyer.", "Deal");
+                deal.getListingTitle() + " was marked complete by the buyer.", "Deal").link(Reference.DEAL, deal.getId());
         saveChanges(() -> {
             deal.setStatus("Accepted");
             deal.setCompletedAt(oldCompletion);
@@ -1233,7 +1250,7 @@ public class DummyDataService {
         review.setComment(comment == null ? "" : comment.strip());
         reviews.add(review);
         Notification notice = createNotice(deal.getSellerUsername(), "Review received", deal.getListingTitle()
-                + " received " + rating + " out of 5 stars.", "Rating");
+                + " received " + rating + " out of 5 stars.", "Rating").link(Reference.REVIEW, review.getId());
         saveChanges(() -> {
             reviews.remove(review);
             notifications.remove(notice);
@@ -1252,6 +1269,101 @@ public class DummyDataService {
             throw new SecurityException("Sign in to view notifications.");
         }
         return getNotificationsFor(requireActor(actor.getRole()).getUsername());
+    }
+
+    /** Marks a seller or admin notice as read after checking the current recipient. */
+    public synchronized Notification readOwnNotice(String id) {
+        Notification notice = findOwnNotice(id);
+        if (!notice.isRead()) {
+            notice.setRead(true);
+            saveChanges(() -> notice.setRead(false));
+        }
+        return notice;
+    }
+
+    private Notification findOwnNotice(String id) {
+        return ownNotifications().stream().filter(n -> id != null && id.equals(n.getId())).findFirst()
+                .orElseThrow(() -> new SecurityException("This notification is unavailable."));
+    }
+
+    /** Resolves a notice's link against current records and their owner permissions. */
+    public synchronized String noticeRecord(String id) {
+        Notification notice = findOwnNotice(id);
+        User actor = SessionManager.getCurrentUser();
+        String key = notice.getRecordId();
+        if (notice.getReference() == null) {
+            throw new IllegalStateException("No related record is available.");
+        }
+        return switch (notice.getReference()) {
+            case LISTING -> {
+                Listing listing = requireListing(key);
+                if (actor.getRole() != UserRole.ADMIN && !actor.getUsername().equals(listing.getSellerUsername())) {
+                    throw new SecurityException("This listing record is unavailable.");
+                }
+                yield listing.getTitle() + "\n" + listing.getStatus() + "\n" + listing.getDescription();
+            }
+            case DEAL -> deals.stream().filter(d -> key.equals(d.getId())
+                            && (actor.getRole() == UserRole.ADMIN || involves(d, actor.getUsername())))
+                    .map(d -> d.getListingTitle() + "\n" + d.getStatus() + "\n" + d.terms()).findFirst()
+                    .orElseThrow(() -> new IllegalStateException("This deal record is unavailable."));
+            case REVIEW -> reviews.stream().filter(r -> key.equals(r.getId())
+                            && (actor.getRole() == UserRole.ADMIN || actor.getUsername().equals(r.getSellerUsername())))
+                    .map(r -> r.getListingTitle() + "\n" + r.getRating() + "/5\n" + r.getComment()).findFirst()
+                    .orElseThrow(() -> new IllegalStateException("This review record is unavailable."));
+            case REPORT -> {
+                requireActor(UserRole.ADMIN);
+                yield reports.stream().filter(report -> key.equals(report.listingId()))
+                        .map(report -> "@" + report.buyer() + " · " + report.filedAt() + "\n" + report.reason())
+                        .collect(Collectors.joining("\n\n"));
+            }
+            case ACCOUNT -> {
+                requireActor(UserRole.ADMIN);
+                User user = moderatedUser(key);
+                yield user.getFullName() + " (@" + user.getUsername() + ")\n" + user.getRole();
+            }
+        };
+    }
+
+    /** Returns all received reviews for the current seller, including moderated feedback for context. */
+    public synchronized List<Review> sellerReviews() {
+        User seller = requireActor(UserRole.SELLER);
+        return reviews.stream().filter(r -> seller.getUsername().equals(r.getSellerUsername())).toList();
+    }
+
+    /** Saves a seller reply and notifies the buyer who wrote the review. */
+    public synchronized void replyToReview(String id, String text) {
+        Review review = eligibleSellerReview(id);
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("Enter a nonblank reply.");
+        }
+        String previous = review.getSellerReply();
+        review.setSellerReply(text.strip());
+        Notification notice = createNotice(review.getBuyerUsername(), "Seller replied to your review",
+                review.getListingTitle() + ": " + text.strip(), "Rating");
+        saveChanges(() -> {
+            review.setSellerReply(previous);
+            notifications.remove(notice);
+        });
+    }
+
+    /** Records a seller flag and creates one administrator moderation notice. */
+    public synchronized void flagReview(String id) {
+        Review review = eligibleSellerReview(id);
+        if (review.isFlagged()) {
+            throw new IllegalStateException("This review is already flagged.");
+        }
+        review.setFlagged(true);
+        Notification notice = createNotice("admin", "Review flagged", review.getListingTitle(), "Rating")
+                .link(Reference.REVIEW, review.getId());
+        saveChanges(() -> {
+            review.setFlagged(false);
+            notifications.remove(notice);
+        });
+    }
+
+    private Review eligibleSellerReview(String id) {
+        return sellerReviews().stream().filter(review -> id.equals(review.getId()) && !review.isHidden()).findFirst()
+                .orElseThrow(() -> new IllegalStateException("This review is no longer eligible."));
     }
 
     public List<Deal> getAllDeals() {
