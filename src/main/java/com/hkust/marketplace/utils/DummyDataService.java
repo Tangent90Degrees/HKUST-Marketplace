@@ -633,11 +633,13 @@ public class DummyDataService {
         Double previousPrice = proposal.getOfferPrice();
         LocalDateTime previousStart = proposal.getRequestedStart();
         LocalDateTime previousEnd = proposal.getRequestedEnd();
+        LocalDateTime previousStartedAt = proposal.getStartedAt();
         ListingStatus previousListingStatus = listing.getStatus();
         Map<Deal, String> closed = new LinkedHashMap<>();
         switch (decision) {
             case ACCEPT -> {
                 proposal.setStatus("Accepted");
+                proposal.setStartedAt(LocalDateTime.now(HONG_KONG));
                 listing.setStatus(proposal.getDealType() == ListingType.LEND && !previousStart.isAfter(LocalDateTime.now(HONG_KONG))
                         ? ListingStatus.LENT : ListingStatus.RESERVED);
                 for (Deal other : deals) {
@@ -665,6 +667,7 @@ public class DummyDataService {
             proposal.setStatus("Pending");
             proposal.setOfferPrice(previousPrice);
             proposal.setRequestedPeriod(previousStart, previousEnd);
+            proposal.setStartedAt(previousStartedAt);
             listing.setStatus(previousListingStatus);
             closed.forEach(Deal::setStatus);
             notifications.remove(notice);
@@ -1133,6 +1136,122 @@ public class DummyDataService {
         return deals.stream()
                 .filter(d -> d.getBuyerUsername().equalsIgnoreCase(username))
                 .collect(Collectors.toList());
+    }
+
+    /** Returns current and completed deals for the signed-in buyer. */
+    public synchronized List<Deal> buyerDeals() {
+        return getDealsForBuyer(requireActor(UserRole.BUYER).getUsername());
+    }
+
+    /** Completes a buyer's own purchase or claim, or returns their active loan. */
+    public synchronized void finishBuyerDeal(String id) {
+        Deal deal = buyerDeal(id);
+        LocalDateTime now = LocalDateTime.now(HONG_KONG);
+        if (!"Accepted".equals(deal.getStatus())) {
+            throw new IllegalStateException("This deal is not ready to complete.");
+        }
+        if (deal.getDealType() == ListingType.LEND && (now.isBefore(deal.getRequestedStart())
+                || !now.isBefore(deal.getRequestedEnd()))) {
+            throw new IllegalStateException("Self-return is available only during active borrowing.");
+        }
+        finishDeal(deal, now);
+    }
+
+    private Deal buyerDeal(String id) {
+        return buyerDeals().stream().filter(deal -> id.equals(deal.getId())).findFirst()
+                .orElseThrow(() -> new SecurityException("This deal does not belong to the current buyer."));
+    }
+
+    private void finishDeal(Deal deal, LocalDateTime time) {
+        Listing listing = requireListing(deal.getListingId());
+        ListingStatus oldListingStatus = listing.getStatus();
+        LocalDateTime oldCompletion = deal.getCompletedAt();
+        boolean returnLoan = deal.getDealType() == ListingType.LEND;
+        deal.setStatus(returnLoan ? "Returned" : "Completed");
+        deal.setCompletedAt(time);
+        if (oldListingStatus == ListingStatus.RESERVED || oldListingStatus == ListingStatus.LENT) {
+            listing.setStatus(switch (deal.getDealType()) {
+                case SELL -> ListingStatus.SOLD;
+                case LEND -> ListingStatus.LIVE;
+                case GIVEAWAY -> ListingStatus.GIVEN;
+            });
+        }
+        Notification notice = returnLoan ? null : createNotice(deal.getSellerUsername(), "Deal completed",
+                deal.getListingTitle() + " was marked complete by the buyer.", "Deal");
+        saveChanges(() -> {
+            deal.setStatus("Accepted");
+            deal.setCompletedAt(oldCompletion);
+            listing.setStatus(oldListingStatus);
+            notifications.remove(notice);
+        });
+    }
+
+    /** Advances due loans using Hong Kong time even when no portal is signed in. */
+    public synchronized void advanceBorrowings() {
+        advanceBorrowings(LocalDateTime.now(HONG_KONG));
+    }
+
+    synchronized void advanceBorrowings(LocalDateTime now) {
+        for (Deal deal : deals) {
+            if (deal.getDealType() != ListingType.LEND || !"Accepted".equals(deal.getStatus())) {
+                continue;
+            }
+            Listing listing = requireListing(deal.getListingId());
+            if (!now.isBefore(deal.getRequestedEnd())) {
+                finishDeal(deal, deal.getRequestedEnd());
+                continue;
+            }
+            if (listing.getStatus() == ListingStatus.RESERVED && !now.isBefore(deal.getRequestedStart())) {
+                listing.setStatus(ListingStatus.LENT);
+                saveChanges(() -> listing.setStatus(ListingStatus.RESERVED));
+            }
+            if (!deal.isDueReminderSent() && !now.isBefore(deal.getRequestedEnd().minusDays(1))) {
+                Notification notice = createNotice(deal.getBuyerUsername(), "Borrowing due soon",
+                        deal.getListingTitle() + " is due at " + deal.getRequestedEnd() + " (HKT).", "Deal");
+                deal.setDueReminderSent(true);
+                saveChanges(() -> {
+                    deal.setDueReminderSent(false);
+                    notifications.remove(notice);
+                });
+            }
+        }
+    }
+
+    /** Records feedback for a completed deal belonging to the current buyer. */
+    public synchronized void reviewCompletedDeal(String id, int rating, String comment) {
+        Deal deal = buyerDeal(id);
+        if (!deal.isCompleted() || rating < 1 || rating > 5) {
+            throw new IllegalArgumentException("Select a completed deal and a rating from 1 to 5.");
+        }
+        Review review = new Review();
+        review.setId("R" + reviewIdCounter.getAndIncrement());
+        review.setDealId(id);
+        review.setBuyerUsername(deal.getBuyerUsername());
+        review.setSellerUsername(deal.getSellerUsername());
+        review.setListingTitle(deal.getListingTitle());
+        review.setRating(rating);
+        review.setComment(comment == null ? "" : comment.strip());
+        reviews.add(review);
+        Notification notice = createNotice(deal.getSellerUsername(), "Review received", deal.getListingTitle()
+                + " received " + rating + " out of 5 stars.", "Rating");
+        saveChanges(() -> {
+            reviews.remove(review);
+            notifications.remove(notice);
+        });
+    }
+
+    public synchronized String sellerDisplayName(String username) {
+        User seller = findUser(username);
+        return seller == null ? username : seller.getFullName();
+    }
+
+    /** Provides only the authenticated actor's notifications. */
+    public synchronized List<Notification> ownNotifications() {
+        User actor = SessionManager.getCurrentUser();
+        if (actor == null) {
+            throw new SecurityException("Sign in to view notifications.");
+        }
+        return getNotificationsFor(requireActor(actor.getRole()).getUsername());
     }
 
     public List<Deal> getAllDeals() {

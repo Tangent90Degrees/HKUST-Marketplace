@@ -9,6 +9,7 @@ public class Review implements java.io.Serializable {
     private String sellerUsername;
     private String buyerUsername;
     private String listingTitle;
+    private String dealId;
     private int rating; // 1-5
     private String comment;
     private String sellerReply;
@@ -32,6 +33,8 @@ public class Review implements java.io.Serializable {
 
     public String getListingTitle() { return listingTitle; }
     public void setListingTitle(String listingTitle) { this.listingTitle = listingTitle; }
+    public String getDealId() { return dealId; }
+    public void setDealId(String dealId) { this.dealId = dealId; }
 
     public int getRating() { return rating; }
     public void setRating(int rating) { this.rating = rating; }

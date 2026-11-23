@@ -21,6 +21,8 @@ public class Deal implements java.io.Serializable {
     private LocalDateTime createdAt;
     private LocalDateTime completedAt;
     private boolean rated;
+    private boolean dueReminderSent;
+    private LocalDateTime startedAt;
 
     public Deal() {
         this.createdAt = LocalDateTime.now();
@@ -88,4 +90,16 @@ public class Deal implements java.io.Serializable {
 
     public boolean isRated() { return rated; }
     public void setRated(boolean rated) { this.rated = rated; }
+    public boolean isDueReminderSent() { return dueReminderSent; }
+    public void setDueReminderSent(boolean sent) { dueReminderSent = sent; }
+    public LocalDateTime getStartedAt() { return dealType == ListingType.LEND ? getRequestedStart() : startedAt; }
+    public void setStartedAt(LocalDateTime startedAt) { this.startedAt = startedAt; }
+    public boolean isCompleted() { return "Completed".equals(status) || "Returned".equals(status); }
+    public String displayType() {
+        return switch (dealType) {
+            case SELL -> "Bought";
+            case LEND -> "Borrowed";
+            case GIVEAWAY -> "Received";
+        };
+    }
 }

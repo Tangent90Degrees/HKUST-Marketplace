@@ -209,12 +209,20 @@ public class BuyerDashboardController {
                 entry.setWrapText(true);
                 body.getChildren().add(entry);
             }
+            Button sellerProfile = new Button("Seller profile");
+            sellerProfile.setOnAction(event -> {
+                String feedback = reviews.stream().map(review -> review.getRating() + "/5  "
+                        + java.util.Objects.toString(review.getComment(), "")).collect(java.util.stream.Collectors.joining("\n"));
+                Alert profile = new Alert(Alert.AlertType.INFORMATION, average + (feedback.isEmpty() ? "" : "\n\n" + feedback));
+                profile.setHeaderText(service.sellerDisplayName(listing.getSellerUsername()));
+                profile.showAndWait();
+            });
             Button chat = new Button("Chat");
             chat.setOnAction(event -> showBuyerChat(listing));
             Button report = new Button("Report listing");
             report.setOnAction(event -> new TextInputDialog().showAndWait().ifPresent(reason ->
                     tryAction(() -> service.reportListing(listingId, reason), "Report received.")));
-            HBox actions = new HBox(8, chat, report);
+            HBox actions = new HBox(8, sellerProfile, chat, report);
             if (listing.getStatus() == ListingStatus.LIVE) {
                 Button action = new Button(switch (listing.getType()) {
                     case SELL -> "Make offer";
@@ -341,17 +349,53 @@ public class BuyerDashboardController {
         colAction.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue()[4]));
 
         table.getColumns().addAll(colTitle, colSeller, colType, colStatus, colAction);
+        table.getColumns().forEach(column -> column.setSortable(false));
 
-        var user = SessionManager.getCurrentUser();
-        List<Deal> deals = DummyDataService.getInstance().getDealsForBuyer(user.getUsername());
+        var service = DummyDataService.getInstance();
+        List<Deal> deals = service.buyerDeals();
         table.setItems(FXCollections.observableArrayList(deals.stream().map(deal -> new String[]{
-                deal.getListingTitle(), deal.getSellerUsername(), deal.getDealType().name(),
+                deal.getListingTitle(), service.sellerDisplayName(deal.getSellerUsername()), deal.displayType(),
                 deal.getStatus(), deal.terms()
         }).toList()));
-        Button details = new Button("View selected listing");
-        details.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
-        details.setOnAction(event -> showListingDetails(deals.get(table.getSelectionModel().getSelectedIndex()).getListingId()));
-        root.getChildren().addAll(table, details);
+        Button details = new Button("Listing details");
+        Button chat = new Button("Chat");
+        Button complete = new Button("Complete or return");
+        Button rate = new Button("Review seller");
+        var selection = table.getSelectionModel();
+        details.disableProperty().bind(selection.selectedItemProperty().isNull());
+        chat.disableProperty().bind(selection.selectedItemProperty().isNull());
+        complete.setDisable(true);
+        rate.setDisable(true);
+        selection.selectedIndexProperty().addListener((property, before, selected) -> {
+            Deal deal = selected.intValue() < 0 ? null : deals.get(selected.intValue());
+            complete.setDisable(deal == null || !"Accepted".equals(deal.getStatus()));
+            rate.setDisable(deal == null || !deal.isCompleted());
+        });
+        details.setOnAction(event -> showListingDetails(deals.get(selection.getSelectedIndex()).getListingId()));
+        chat.setOnAction(event -> {
+            Listing listing = service.findListing(deals.get(selection.getSelectedIndex()).getListingId());
+            if (listing != null) {
+                tryAction(() -> showBuyerChat(listing), null);
+            }
+        });
+        complete.setOnAction(event -> {
+            Deal deal = deals.get(selection.getSelectedIndex());
+            boolean loan = deal.getDealType() == ListingType.LEND;
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION, loan ? "Return this borrowing now?" : "Mark this deal complete?");
+            if (confirm.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+                tryAction(() -> {
+                    service.finishBuyerDeal(deal.getId());
+                    if (!loan) {
+                        rateDeal(deal);
+                    }
+                    showMyDeals();
+                }, loan ? "Borrowing returned." : "Deal completed.");
+            }
+        });
+        rate.setOnAction(event -> rateDeal(deals.get(selection.getSelectedIndex())));
+        Button refresh = new Button("Refresh");
+        refresh.setOnAction(event -> showMyDeals());
+        root.getChildren().addAll(table, new HBox(8, details, chat, complete, rate, refresh));
 
         contentPane.getChildren().add(root);
     }
@@ -388,12 +432,57 @@ public class BuyerDashboardController {
         TableColumn<String[], String> c5 = new TableColumn<>("Outcome");
         c5.setCellValueFactory(d -> new javafx.beans.property.SimpleStringProperty(d.getValue()[4]));
         table.getColumns().addAll(c1, c2, c3, c4, c5);
-        table.setItems(FXCollections.observableArrayList(
-                new String[]{"Old Chemistry Book", "Charlie Lee", "2025-11-12", "Bought", "Completed"},
-                new String[]{"USB Hub", "Diana Ng", "2025-10-03", "Received", "Completed"}
-        ));
+        ComboBox<String> category = new ComboBox<>(FXCollections.observableArrayList(DummyDataService.CATEGORIES));
+        category.setPromptText("Any category");
+        Button clearCategory = new Button("Clear category");
+        clearCategory.setOnAction(event -> category.setValue(null));
+        filters.getChildren().addAll(category, clearCategory);
+        Label feedback = new Label();
+        var service = DummyDataService.getInstance();
+        Runnable apply = () -> {
+            if (from.getValue() != null && to.getValue() != null && from.getValue().isAfter(to.getValue())) {
+                feedback.setText("Start date must be on or before end date.");
+                return;
+            }
+            String keyword = search.getText().strip().toLowerCase(java.util.Locale.ROOT);
+            List<String[]> rows = service.buyerDeals().stream().filter(Deal::isCompleted)
+                    .filter(deal -> deal.getCompletedAt() != null)
+                    .filter(deal -> from.getValue() == null || !deal.getCompletedAt().toLocalDate().isBefore(from.getValue()))
+                    .filter(deal -> to.getValue() == null || !deal.getCompletedAt().toLocalDate().isAfter(to.getValue()))
+                    .filter(deal -> category.getValue() == null || (service.findListing(deal.getListingId()) != null
+                            && category.getValue().equals(service.findListing(deal.getListingId()).getCategory())))
+                    .filter(deal -> (deal.getListingTitle() + " " + deal.getSellerUsername() + " "
+                            + service.sellerDisplayName(deal.getSellerUsername())).toLowerCase(java.util.Locale.ROOT).contains(keyword))
+                    .map(deal -> new String[]{deal.getListingTitle(), service.sellerDisplayName(deal.getSellerUsername()),
+                            deal.getCompletedAt().toLocalDate().toString(), deal.displayType(), deal.getStatus()}).toList();
+            feedback.setText(rows.isEmpty() ? "No completed deals match." : "");
+            table.getItems().setAll(rows);
+        };
+        for (var filter : List.<javafx.beans.value.ObservableValue<?>>of(
+                from.valueProperty(), to.valueProperty(), category.valueProperty(), search.textProperty())) {
+            filter.addListener((property, before, after) -> apply.run());
+        }
+        apply.run();
+        root.getChildren().add(feedback);
         root.getChildren().add(table);
         contentPane.getChildren().add(root);
+    }
+
+    private void rateDeal(Deal deal) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Review " + deal.getSellerUsername());
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        ComboBox<Integer> rating = new ComboBox<>(FXCollections.observableArrayList(1, 2, 3, 4, 5));
+        rating.setPromptText("Select 1 to 5 stars");
+        dialog.getDialogPane().lookupButton(ButtonType.OK).disableProperty().bind(rating.valueProperty().isNull());
+        TextArea comment = new TextArea();
+        comment.setPromptText("Write a review");
+        comment.setPrefRowCount(4);
+        dialog.getDialogPane().setContent(new VBox(8, rating, comment));
+        if (dialog.showAndWait().orElse(ButtonType.CANCEL) == ButtonType.OK) {
+            tryAction(() -> DummyDataService.getInstance().reviewCompletedDeal(
+                    deal.getId(), rating.getValue(), comment.getText()), "Review submitted.");
+        }
     }
 
     @FXML
@@ -423,8 +512,13 @@ public class BuyerDashboardController {
         root.setPadding(new Insets(4));
 
         User user = SessionManager.getCurrentUser();
-        List<Notification> notifs = DummyDataService.getInstance()
-                .getNotificationsFor(user != null ? user.getUsername() : "");
+        List<Notification> notifs;
+        try {
+            notifs = DummyDataService.getInstance().ownNotifications();
+        } catch (SecurityException | IllegalStateException failure) {
+            contentPane.getChildren().add(new Label(failure.getMessage()));
+            return;
+        }
 
         if (notifs.isEmpty()) {
             Label empty = new Label("No notifications yet.");
