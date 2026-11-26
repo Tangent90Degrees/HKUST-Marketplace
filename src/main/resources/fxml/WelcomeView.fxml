@@ -68,8 +68,12 @@
                 </VBox>
             </HBox>
 
-            <Label text="Frontend Demo · Skeleton for COMP Project  ·  No backend connected"
-                   style="-fx-text-fill: #6a849e; -fx-font-size: 12px;"/>
+            <HBox fx:id="demoControls" alignment="CENTER" spacing="12">
+                <Button text="Import demo listings and chat" styleClass="btn-gold" onAction="#importDemoData"/>
+                <Button text="Clear demo listings and chat" styleClass="btn-danger" onAction="#clearDemoData"/>
+            </HBox>
+            <Label fx:id="demoStatus" text="Demo mode uses a separate local dataset."
+                   style="-fx-text-fill: #a0b8d0; -fx-font-size: 13px;"/>
         </VBox>
     </center>
 </BorderPane>

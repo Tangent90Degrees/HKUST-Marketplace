@@ -21,8 +21,13 @@ public class MarketplaceApp extends Application {
     public void start(Stage primaryStage) {
         try {
             Path defaultFile = Path.of(System.getProperty("user.home"), ".hkust-marketplace", "marketplace.data");
-            Path dataFile = Path.of(System.getProperty("marketplace.data", defaultFile.toString()));
-            DummyDataService.getInstance().openLocalStorage(dataFile);
+            boolean demo = getParameters() != null && getParameters().getRaw().contains("--demo");
+            var service = DummyDataService.getInstance();
+            if (demo) {
+                service.openDemoStorage(defaultFile.resolveSibling("marketplace-demo.data"));
+            } else {
+                service.openLocalStorage(Path.of(System.getProperty("marketplace.data", defaultFile.toString())));
+            }
         } catch (IllegalStateException failure) {
             new Alert(Alert.AlertType.ERROR, failure.getMessage()).showAndWait();
             return;

@@ -34,7 +34,7 @@ public class SellerDashboardController {
     @FXML private StackPane contentPane;
     @FXML private Label pageTitle;
     @FXML private Label welcomeLabel;
-    @FXML private Button btnListings, btnCreate, btnStats, btnReviews, btnNotifications, btnProfile;
+    @FXML private Button btnListings, btnCreate, btnChats, btnStats, btnReviews, btnNotifications, btnProfile;
 
     private Button currentActiveBtn;
 
@@ -51,6 +51,36 @@ public class SellerDashboardController {
         btn.getStyleClass().add("sidebar-btn-active");
         currentActiveBtn = btn;
         pageTitle.setText(title);
+    }
+
+    @FXML
+    private void showChats() {
+        setActive(btnChats, "Chats");
+        Button refresh = new Button("Refresh");
+        refresh.setOnAction(event -> showChats());
+        VBox root = new VBox(12, refresh);
+        root.setPadding(new Insets(4));
+        var conversations = DummyDataService.getInstance().sellerInbox();
+        if (conversations.isEmpty()) {
+            root.getChildren().add(new Label("No conversations yet."));
+        }
+        for (var conversation : conversations) {
+            var latest = conversation.latest();
+            Label who = new Label(conversation.listingTitle() + " / @" + conversation.buyer());
+            Label preview = new Label("@" + latest.sender() + ": " + latest.text());
+            preview.setWrapText(true);
+            Button open = new Button("Open chat");
+            open.setOnAction(event -> {
+                openSellerChat(conversation.listingId(), conversation.buyer());
+                showChats();
+            });
+            VBox row = new VBox(5, who, preview, open);
+            row.getStyleClass().add("card");
+            root.getChildren().add(row);
+        }
+        ScrollPane scroll = new ScrollPane(root);
+        scroll.setFitToWidth(true);
+        contentPane.getChildren().setAll(scroll);
     }
 
     @FXML

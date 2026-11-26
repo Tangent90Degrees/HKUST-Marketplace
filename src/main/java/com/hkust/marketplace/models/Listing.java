@@ -67,7 +67,10 @@ public class Listing implements java.io.Serializable {
     public Integer getLendingDays() { return lendingDays; }
     public void setLendingDays(Integer lendingDays) { this.lendingDays = lendingDays; }
     public Long getLendingSeconds() {
-        return lendingSeconds != null || lendingDays == null ? lendingSeconds : lendingDays * 86_400L;
+        if (lendingSeconds != null || lendingDays == null) {
+            return lendingSeconds;
+        }
+        return lendingDays * 86_400L;
     }
     public void setLendingSeconds(Long seconds) { this.lendingSeconds = seconds; }
 

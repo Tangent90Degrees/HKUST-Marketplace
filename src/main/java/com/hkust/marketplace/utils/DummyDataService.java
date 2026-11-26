@@ -6,6 +6,7 @@ import com.hkust.marketplace.models.Notification.Reference;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -38,6 +39,7 @@ public class DummyDataService {
     private final List<ListingReport> reports = new ArrayList<>();
     private static final ZoneId HONG_KONG = ZoneId.of("Asia/Hong_Kong");
     private MarketplaceStorage storage;
+    private boolean demoMode;
 
     private final AtomicInteger listingIdCounter = new AtomicInteger(100);
     private final AtomicInteger dealIdCounter = new AtomicInteger(500);
@@ -94,33 +96,96 @@ public class DummyDataService {
             } else {
                 users.clear();
                 users.putAll(saved.users());
-                listings.clear();
-                listings.putAll(saved.listings());
-                deals.clear();
-                deals.addAll(saved.deals());
-                notifications.clear();
-                notifications.addAll(saved.notifications());
-                reviews.clear();
-                reviews.addAll(saved.reviews());
-                messages.clear();
-                reports.clear();
-                if (saved.messages() != null) {
-                    messages.addAll(saved.messages());
-                }
-                if (saved.reports() != null) {
-                    reports.addAll(saved.reports());
-                }
-                listingIdCounter.set(saved.nextListing());
-                dealIdCounter.set(saved.nextDeal());
-                notifIdCounter.set(saved.nextNotification());
-                reviewIdCounter.set(saved.nextReview());
+                restoreMarketContent(saved);
                 notifications.stream().filter(notice -> notice.getId() == null)
                         .forEach(notice -> notice.setId("N" + notifIdCounter.getAndIncrement()));
             }
             storage = candidate;
+            demoMode = false;
         } catch (IOException e) {
             throw new IllegalStateException("Could not open the local marketplace data.", e);
         }
+    }
+
+    /** Opens a separate demonstration store and enables its sample-data controls. */
+    public synchronized void openDemoStorage(Path file) {
+        if (Files.notExists(file)) {
+            try {
+                new MarketplaceStorage(file).save(new DummyDataService().snapshot());
+            } catch (IOException failure) {
+                throw new IllegalStateException("Could not initialize the demo data.", failure);
+            }
+        }
+        openLocalStorage(file);
+        demoMode = true;
+    }
+
+    public synchronized boolean isDemoMode() {
+        return demoMode;
+    }
+
+    /** Replaces demonstration listings and related data with the bundled fixtures. Accounts are kept. */
+    public synchronized void importDemoData() {
+        requireDemoMode();
+        var sample = new DummyDataService();
+        for (User fixture : sample.users.values()) {
+            User existing = users.get(fixture.getUsername());
+            if (existing == null || !existing.isActive() || existing.getRole() != fixture.getRole()) {
+                throw new IllegalStateException("The demo account @" + fixture.getUsername() + " must be active to import samples.");
+            }
+        }
+        Listing listing = sample.listings.get("L101");
+        sample.addTextMessage(listing, "alice", "alice", "charlie", "Is the MacBook charger still available?");
+        replaceDemoContent(sample.snapshot());
+    }
+
+    /** Clears demonstration listings, conversations, and their related records while keeping accounts. */
+    public synchronized void clearDemoData() {
+        requireDemoMode();
+        replaceDemoContent(new MarketplaceStorage.Snapshot(users, Map.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), listingIdCounter.get(), dealIdCounter.get(),
+                notifIdCounter.get(), reviewIdCounter.get()));
+    }
+
+    private void requireDemoMode() {
+        if (!demoMode) {
+            throw new IllegalStateException("Demo data controls are available only in demo mode.");
+        }
+    }
+
+    private void replaceDemoContent(MarketplaceStorage.Snapshot data) {
+        var replacement = new MarketplaceStorage.Snapshot(users, data.listings(), data.deals(), data.notifications(),
+                data.reviews(), data.messages(), data.reports(), data.nextListing(), data.nextDeal(),
+                data.nextNotification(), data.nextReview());
+        try {
+            storage.save(replacement);
+        } catch (IOException failure) {
+            throw new IllegalStateException("Could not save the demo data.", failure);
+        }
+        restoreMarketContent(replacement);
+    }
+
+    private void restoreMarketContent(MarketplaceStorage.Snapshot saved) {
+        listings.clear();
+        listings.putAll(saved.listings());
+        deals.clear();
+        deals.addAll(saved.deals());
+        notifications.clear();
+        notifications.addAll(saved.notifications());
+        reviews.clear();
+        reviews.addAll(saved.reviews());
+        messages.clear();
+        if (saved.messages() != null) {
+            messages.addAll(saved.messages());
+        }
+        reports.clear();
+        if (saved.reports() != null) {
+            reports.addAll(saved.reports());
+        }
+        listingIdCounter.set(saved.nextListing());
+        dealIdCounter.set(saved.nextDeal());
+        notifIdCounter.set(saved.nextNotification());
+        reviewIdCounter.set(saved.nextReview());
     }
 
     private MarketplaceStorage.Snapshot snapshot() {
@@ -723,6 +788,25 @@ public class DummyDataService {
         deals.stream().filter(d -> listingId.equals(d.getListingId())).map(Deal::getBuyerUsername).forEach(buyers::add);
         messages.stream().filter(m -> listingId.equals(m.listingId())).map(ChatMessage::buyer).forEach(buyers::add);
         return List.copyOf(buyers);
+    }
+
+    /** Latest persisted message for one buyer and listing in the seller inbox. */
+    public record SellerConversation(String listingId, String listingTitle, String buyer, ChatMessage latest) {}
+
+    /** Returns this seller's conversations, newest activity first, including chats without proposals. */
+    public synchronized List<SellerConversation> sellerInbox() {
+        User seller = requireActor(UserRole.SELLER);
+        Map<List<String>, SellerConversation> threads = new LinkedHashMap<>();
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            ChatMessage message = messages.get(index);
+            Listing listing = listings.get(message.listingId());
+            if (listing != null && seller.getUsername().equals(listing.getSellerUsername())
+                    && seller.getUsername().equals(message.seller())) {
+                threads.putIfAbsent(List.of(message.listingId(), message.buyer()),
+                        new SellerConversation(listing.getId(), listing.getTitle(), message.buyer(), message));
+            }
+        }
+        return List.copyOf(threads.values());
     }
 
     public synchronized List<ChatMessage> sellerChat(String listingId, String buyer, String query) {

@@ -27,6 +27,18 @@ To include the JavaFX portal smoke test, run `.\mvnw.cmd "-Dmarketplace.uiSmoke=
 
 Seeded credentials are for the local demonstration. The password policy for registration and changes requires at least eight characters, an uppercase letter, a lowercase letter, a digit, and a special character that is neither a letter, digit, nor whitespace. Confirm passwords wherever the form asks. Passwords are stored as PBKDF2-HMAC-SHA256 hashes with individual random salts.
 
+### Isolated demo mode
+
+Start the demo from the project directory on Windows.
+
+```powershell
+.\mvnw.cmd "-Djavafx.args=--demo" javafx:run
+```
+
+The welcome screen offers **Import demo listings and chat** and **Clear demo listings and chat**. Both require confirmation and affect only `.hkust-marketplace/marketplace-demo.data` in the operating-system user profile. Import replaces the demo marketplace content with bundled samples. Clear removes listings, chat, and their related deals, reviews, reports, and notifications. Both actions keep demo accounts.
+
+To show a new message, sign in as `alice`, open the MacBook charger listing, and send a message through **Chat**. Log out, sign in as `charlie` in the same app, and open **Chats**. The inbox shows the buyer and latest message, and **Open chat** displays the conversation. The inbox also includes messages sent without an offer.
+
 ## Suggested grading walkthrough
 
 1. Sign in as a seller, create a listing, and check that My Listings shows Pending Review. Sell uses a positive HK-dollar price. Lend asks for seconds and accepts a minimum of five seconds. Up to six images are supported, each up to 5 MB.
